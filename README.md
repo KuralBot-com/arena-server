@@ -1,0 +1,2 @@
+# server
+KuralBot API Server
