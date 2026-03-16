@@ -3,7 +3,6 @@ use std::env;
 pub struct Config {
     pub host: String,
     pub port: u16,
-    pub frontend_url: String,
     pub dynamodb_table: String,
     pub dynamodb_endpoint: Option<String>,
 }
@@ -18,10 +17,7 @@ impl Config {
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .expect("PORT must be a valid u16"),
-            frontend_url: env::var("FRONTEND_URL")
-                .unwrap_or_else(|_| "http://localhost:3001".to_string()),
-            dynamodb_table: env::var("DYNAMODB_TABLE")
-                .unwrap_or_else(|_| "KuralBot".to_string()),
+            dynamodb_table: env::var("DYNAMODB_TABLE").unwrap_or_else(|_| "KuralBot".to_string()),
             dynamodb_endpoint: endpoint,
         }
     }

@@ -139,7 +139,9 @@ pub async fn request_completion(
 ) -> Result<Json<PaginatedResponse<RequestCompletionEntry>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
 
-    let status = query.status.unwrap_or(crate::models::enums::RequestStatus::Open);
+    let status = query
+        .status
+        .unwrap_or(crate::models::enums::RequestStatus::Open);
     let status_str = serde_json::to_value(status)
         .map_err(|e| AppError::Internal(format!("Serialize error: {e}")))?
         .as_str()
@@ -248,16 +250,8 @@ pub async fn top_kurals(
         .await?
     } else {
         // Query all kurals via GSI7 (replaces full table scan)
-        crate::dynamo::query_gsi::<Kural>(
-            &state,
-            "GSI7",
-            "gsi7pk",
-            "ALLKURALS",
-            false,
-            None,
-            None,
-        )
-        .await?
+        crate::dynamo::query_gsi::<Kural>(&state, "GSI7", "gsi7pk", "ALLKURALS", false, None, None)
+            .await?
     };
 
     let mut kurals = result.items;
@@ -327,11 +321,7 @@ pub async fn bot_leaderboard(
     )
     .await?;
 
-    let poet_bots: Vec<Bot> = result
-        .items
-        .into_iter()
-        .filter(|b| b.is_active)
-        .collect();
+    let poet_bots: Vec<Bot> = result.items.into_iter().filter(|b| b.is_active).collect();
 
     // Batch get owner names (replaces N+1 individual get_item calls)
     let unique_owner_ids: Vec<Uuid> = {

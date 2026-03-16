@@ -51,10 +51,7 @@ pub async fn update_score_weights(
         .table_name(&state.table)
         .item("pk", AttributeValue::S("CONFIG".to_string()))
         .item("sk", AttributeValue::S("SCORE_WEIGHTS".to_string()))
-        .item(
-            "community",
-            AttributeValue::N(body.community.to_string()),
-        )
+        .item("community", AttributeValue::N(body.community.to_string()))
         .item("meaning", AttributeValue::N(body.meaning.to_string()))
         .item("prosody", AttributeValue::N(body.prosody.to_string()))
         .send()

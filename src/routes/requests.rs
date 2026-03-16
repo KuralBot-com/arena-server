@@ -73,10 +73,7 @@ pub async fn create_request(
         "gsi3pk".to_string(),
         AttributeValue::S("RSTATUS#open".to_string()),
     );
-    item.insert(
-        "gsi3sk".to_string(),
-        AttributeValue::S(now.to_rfc3339()),
-    );
+    item.insert("gsi3sk".to_string(), AttributeValue::S(now.to_rfc3339()));
 
     let user_pk = format!("USER#{}", user.id);
     let (put_result, counter_result) = tokio::join!(
@@ -132,10 +129,9 @@ pub async fn get_request(
     State(state): State<AppState>,
     Path(request_id): Path<Uuid>,
 ) -> Result<Json<Request>, AppError> {
-    let request: Request =
-        crate::dynamo::get_item(&state, &format!("REQ#{request_id}"), "META")
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let request: Request = crate::dynamo::get_item(&state, &format!("REQ#{request_id}"), "META")
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     Ok(Json(request))
 }
@@ -160,25 +156,16 @@ pub async fn update_request_status(
         .dynamo
         .update_item()
         .table_name(&state.table)
-        .key(
-            "pk",
-            AttributeValue::S(format!("REQ#{request_id}")),
-        )
+        .key("pk", AttributeValue::S(format!("REQ#{request_id}")))
         .key("sk", AttributeValue::S("META".to_string()))
         .update_expression("SET #st = :st, gsi3pk = :gsi3pk, updated_at = :now")
         .expression_attribute_names("#st", "status")
-        .expression_attribute_values(
-            ":st",
-            AttributeValue::S(status_str.clone()),
-        )
+        .expression_attribute_values(":st", AttributeValue::S(status_str.clone()))
         .expression_attribute_values(
             ":gsi3pk",
             AttributeValue::S(format!("RSTATUS#{status_str}")),
         )
-        .expression_attribute_values(
-            ":now",
-            AttributeValue::S(chrono::Utc::now().to_rfc3339()),
-        )
+        .expression_attribute_values(":now", AttributeValue::S(chrono::Utc::now().to_rfc3339()))
         .condition_expression("attribute_exists(pk)")
         .return_values(aws_sdk_dynamodb::types::ReturnValue::AllNew)
         .send()
@@ -212,10 +199,9 @@ pub async fn vote_request(
     }
 
     // Verify request exists
-    let _request: Request =
-        crate::dynamo::get_item(&state, &format!("REQ#{request_id}"), "META")
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let _request: Request = crate::dynamo::get_item(&state, &format!("REQ#{request_id}"), "META")
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let vote_pk = format!("REQ#{request_id}");
     let vote_sk = format!("VOTE#{}", user.id);
@@ -229,7 +215,8 @@ pub async fn vote_request(
         if let Some(old_vote) = existing {
             crate::dynamo::delete_item(&state, &vote_pk, &vote_sk).await?;
             let delta = -(old_vote.value as i64);
-            crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", -1).await?;
+            crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", -1)
+                .await?;
             delta
         } else {
             return Ok(Json(RequestVoteResult {
@@ -317,7 +304,11 @@ pub async fn trending_requests(
     .await?;
 
     let mut requests = result.items;
-    requests.sort_by(|a, b| b.vote_total.cmp(&a.vote_total).then(b.created_at.cmp(&a.created_at)));
+    requests.sort_by(|a, b| {
+        b.vote_total
+            .cmp(&a.vote_total)
+            .then(b.created_at.cmp(&a.created_at))
+    });
     requests.truncate(limit as usize);
 
     Ok(Json(PaginatedResponse {
@@ -326,4 +317,3 @@ pub async fn trending_requests(
         limit,
     }))
 }
-

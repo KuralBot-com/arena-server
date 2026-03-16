@@ -160,33 +160,6 @@ pub async fn query_gsi<T: DeserializeOwned>(
     })
 }
 
-/// Query by partition key with a sort key prefix.
-pub async fn query_partition<T: DeserializeOwned>(
-    state: &AppState,
-    pk: &str,
-    sk_prefix: &str,
-) -> Result<Vec<T>, AppError> {
-    let result = state
-        .dynamo
-        .query()
-        .table_name(&state.table)
-        .key_condition_expression("pk = :pk AND begins_with(sk, :skp)")
-        .expression_attribute_values(":pk", AttributeValue::S(pk.to_string()))
-        .expression_attribute_values(":skp", AttributeValue::S(sk_prefix.to_string()))
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("DynamoDB query error: {e}")))?;
-
-    let items = result.items.unwrap_or_default();
-    let mut parsed = Vec::with_capacity(items.len());
-    for item in items {
-        let val: T = serde_dynamo::from_item(item)
-            .map_err(|e| AppError::Internal(format!("Deserialization error: {e}")))?;
-        parsed.push(val);
-    }
-    Ok(parsed)
-}
-
 /// Atomically add a delta to a numeric field on an item identified by pk + "META" sk.
 pub async fn atomic_add(
     state: &AppState,
@@ -200,7 +173,7 @@ pub async fn atomic_add(
         .table_name(&state.table)
         .key("pk", AttributeValue::S(pk.to_string()))
         .key("sk", AttributeValue::S("META".to_string()))
-        .update_expression(format!("ADD #f :d"))
+        .update_expression("ADD #f :d".to_string())
         .expression_attribute_names("#f", field)
         .expression_attribute_values(":d", AttributeValue::N(delta.to_string()))
         .send()
@@ -284,9 +257,7 @@ pub async fn batch_get_items<T: DeserializeOwned>(
                         .cloned()
                         .unwrap_or_default();
                     let parsed: T = serde_dynamo::from_item(item.clone())
-                        .map_err(|e| {
-                            AppError::Internal(format!("Deserialization error: {e}"))
-                        })?;
+                        .map_err(|e| AppError::Internal(format!("Deserialization error: {e}")))?;
                     results.insert(pk_val, parsed);
                 }
             }
@@ -318,14 +289,8 @@ mod tests {
         let encoded = encode_cursor(&original).unwrap();
         let decoded = decode_cursor(&encoded).unwrap();
 
-        assert_eq!(
-            decoded.get("pk").unwrap().as_s().unwrap(),
-            "USER#abc"
-        );
-        assert_eq!(
-            decoded.get("sk").unwrap().as_s().unwrap(),
-            "META"
-        );
+        assert_eq!(decoded.get("pk").unwrap().as_s().unwrap(), "USER#abc");
+        assert_eq!(decoded.get("sk").unwrap().as_s().unwrap(), "META");
     }
 
     #[test]

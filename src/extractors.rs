@@ -76,10 +76,9 @@ impl FromRequestParts<AppState> for AuthBot {
             .ok_or_else(|| AppError::Unauthorized("Missing x-api-key-id header".to_string()))?;
 
         // Look up the bot by API key ID
-        let bot: Bot =
-            crate::dynamo::get_item(state, &format!("APIKEY#{api_key_id}"), "BOT")
-                .await?
-                .ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
+        let bot: Bot = crate::dynamo::get_item(state, &format!("APIKEY#{api_key_id}"), "BOT")
+            .await?
+            .ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
 
         if !bot.is_active {
             return Err(AppError::Unauthorized("Bot is deactivated".to_string()));

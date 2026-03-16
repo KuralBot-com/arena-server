@@ -103,9 +103,8 @@ pub async fn submit_kural(
         request_meaning: Some(request.meaning.clone()),
     };
 
-    let mut item: std::collections::HashMap<String, AttributeValue> =
-        serde_dynamo::to_item(&kural)
-            .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
+    let mut item: std::collections::HashMap<String, AttributeValue> = serde_dynamo::to_item(&kural)
+        .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
 
     item.insert(
         "pk".to_string(),
@@ -117,28 +116,19 @@ pub async fn submit_kural(
         "gsi4pk".to_string(),
         AttributeValue::S(format!("BYREQ#{}", body.request_id)),
     );
-    item.insert(
-        "gsi4sk".to_string(),
-        AttributeValue::S(now.to_rfc3339()),
-    );
+    item.insert("gsi4sk".to_string(), AttributeValue::S(now.to_rfc3339()));
     // GSI5: kurals by bot
     item.insert(
         "gsi5pk".to_string(),
         AttributeValue::S(format!("BYBOT#{}", bot.id)),
     );
-    item.insert(
-        "gsi5sk".to_string(),
-        AttributeValue::S(now.to_rfc3339()),
-    );
+    item.insert("gsi5sk".to_string(), AttributeValue::S(now.to_rfc3339()));
     // GSI7: all kurals (replaces full table scan)
     item.insert(
         "gsi7pk".to_string(),
         AttributeValue::S("ALLKURALS".to_string()),
     );
-    item.insert(
-        "gsi7sk".to_string(),
-        AttributeValue::S(now.to_rfc3339()),
-    );
+    item.insert("gsi7sk".to_string(), AttributeValue::S(now.to_rfc3339()));
 
     crate::dynamo::put_item(&state, item, "Kural").await?;
 
@@ -262,7 +252,8 @@ pub async fn vote_kural(
     let (delta_up, delta_down): (i64, i64) = if body.value == 0 {
         if let Some(old_vote) = &existing {
             crate::dynamo::delete_item(&state, &vote_pk, &vote_sk).await?;
-            crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", -1).await?;
+            crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", -1)
+                .await?;
             if old_vote.value == 1 {
                 (-1, 0)
             } else {
@@ -317,11 +308,7 @@ pub async fn vote_kural(
         crate::dynamo::put_item(&state, item, "Vote").await?;
         crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", 1).await?;
 
-        if body.value == 1 {
-            (1, 0)
-        } else {
-            (0, 1)
-        }
+        if body.value == 1 { (1, 0) } else { (0, 1) }
     };
 
     // Atomic ADD for vote counts — returns new values (fixes race condition)
@@ -457,10 +444,9 @@ async fn submit_judge_score(
     avg_field: &str,
 ) -> Result<(StatusCode, Json<JudgeScore>), AppError> {
     // Read current kural
-    let mut kural: Kural =
-        crate::dynamo::get_item(state, &format!("KURAL#{kural_id}"), "META")
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let mut kural: Kural = crate::dynamo::get_item(state, &format!("KURAL#{kural_id}"), "META")
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let judge_score = JudgeScore {
         score,
@@ -532,14 +518,17 @@ pub async fn get_scores(
     State(state): State<AppState>,
     Path(kural_id): Path<Uuid>,
 ) -> Result<Json<CompositeScore>, AppError> {
-    let kural: Kural =
-        crate::dynamo::get_item(&state, &format!("KURAL#{kural_id}"), "META")
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let kural: Kural = crate::dynamo::get_item(&state, &format!("KURAL#{kural_id}"), "META")
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let weights = ScoreWeights::load(&state).await?;
-    let composite =
-        compute_composite(kural.community_score, kural.avg_meaning, kural.avg_prosody, &weights);
+    let composite = compute_composite(
+        kural.community_score,
+        kural.avg_meaning,
+        kural.avg_prosody,
+        &weights,
+    );
 
     Ok(Json(CompositeScore {
         kural_id,
@@ -602,7 +591,10 @@ mod tests {
         let result = compute_composite(Some(0.8), Some(0.6), Some(0.9), &w).unwrap();
         // weighted avg * 100
         let expected = (0.8 * 0.34 + 0.6 * 0.33 + 0.9 * 0.33) / (0.34 + 0.33 + 0.33) * 100.0;
-        assert!((result - expected).abs() < 0.01, "Expected {expected}, got {result}");
+        assert!(
+            (result - expected).abs() < 0.01,
+            "Expected {expected}, got {result}"
+        );
     }
 
     #[test]
@@ -610,7 +602,10 @@ mod tests {
         let w = weights(0.34, 0.33, 0.33);
         let result = compute_composite(Some(0.8), None, None, &w).unwrap();
         let expected = 0.8 / 1.0 * 100.0; // only community weight contributes
-        assert!((result - expected).abs() < 0.01, "Expected {expected}, got {result}");
+        assert!(
+            (result - expected).abs() < 0.01,
+            "Expected {expected}, got {result}"
+        );
     }
 
     #[test]
@@ -624,7 +619,9 @@ mod tests {
         let w = weights(0.5, 0.5, 0.0);
         let result = compute_composite(Some(1.0), Some(0.5), None, &w).unwrap();
         let expected = (1.0 * 0.5 + 0.5 * 0.5) / (0.5 + 0.5) * 100.0;
-        assert!((result - expected).abs() < 0.01, "Expected {expected}, got {result}");
+        assert!(
+            (result - expected).abs() < 0.01,
+            "Expected {expected}, got {result}"
+        );
     }
 }
-

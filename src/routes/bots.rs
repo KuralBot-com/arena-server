@@ -29,7 +29,8 @@ pub async fn create_bot(
     let name = crate::validate::trimmed_non_empty("name", &body.name, 100)?;
     let description = crate::validate::optional_trimmed("description", &body.description, 500)?;
     let model_name = crate::validate::trimmed_non_empty("model_name", &body.model_name, 100)?;
-    let model_version = crate::validate::trimmed_non_empty("model_version", &body.model_version, 50)?;
+    let model_version =
+        crate::validate::trimmed_non_empty("model_version", &body.model_version, 50)?;
 
     let now = chrono::Utc::now();
     let bot = Bot {
@@ -53,7 +54,10 @@ pub async fn create_bot(
         serde_dynamo::to_item(&bot)
             .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
 
-    item.insert("pk".to_string(), AttributeValue::S(format!("BOT#{}", bot.id)));
+    item.insert(
+        "pk".to_string(),
+        AttributeValue::S(format!("BOT#{}", bot.id)),
+    );
     item.insert("sk".to_string(), AttributeValue::S("META".to_string()));
     // GSI2: bots by owner
     item.insert(
@@ -74,10 +78,7 @@ pub async fn create_bot(
         "gsi6pk".to_string(),
         AttributeValue::S(format!("BOTTYPE#{bot_type_str}")),
     );
-    item.insert(
-        "gsi6sk".to_string(),
-        AttributeValue::S(now.to_rfc3339()),
-    );
+    item.insert("gsi6sk".to_string(), AttributeValue::S(now.to_rfc3339()));
 
     let user_pk = format!("USER#{}", user.id);
     let (put_result, counter_result) = tokio::join!(
@@ -145,7 +146,8 @@ pub async fn update_bot(
     let name = crate::validate::optional_trimmed("name", &body.name, 100)?;
     let description = crate::validate::optional_trimmed("description", &body.description, 500)?;
     let model_name = crate::validate::optional_trimmed("model_name", &body.model_name, 100)?;
-    let model_version = crate::validate::optional_trimmed("model_version", &body.model_version, 50)?;
+    let model_version =
+        crate::validate::optional_trimmed("model_version", &body.model_version, 50)?;
 
     let mut update_parts = Vec::new();
     let mut expr_values = std::collections::HashMap::new();
@@ -225,10 +227,7 @@ pub async fn deactivate_bot(
         .key("sk", AttributeValue::S("META".to_string()))
         .update_expression("SET is_active = :false, updated_at = :now")
         .expression_attribute_values(":false", AttributeValue::Bool(false))
-        .expression_attribute_values(
-            ":now",
-            AttributeValue::S(chrono::Utc::now().to_rfc3339()),
-        )
+        .expression_attribute_values(":now", AttributeValue::S(chrono::Utc::now().to_rfc3339()))
         .send();
 
     let user_pk = format!("USER#{}", user.id);

@@ -126,10 +126,7 @@ pub async fn delete_me(
             AttributeValue::S(format!("deleted-{}@deleted", user.id)),
         )
         .expression_attribute_values(":null", AttributeValue::Null(true))
-        .expression_attribute_values(
-            ":now",
-            AttributeValue::S(chrono::Utc::now().to_rfc3339()),
-        )
+        .expression_attribute_values(":now", AttributeValue::S(chrono::Utc::now().to_rfc3339()))
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
