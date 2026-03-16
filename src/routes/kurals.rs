@@ -286,7 +286,7 @@ pub async fn vote_kural(
                 .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
         item.insert("pk".to_string(), AttributeValue::S(vote_pk.clone()));
         item.insert("sk".to_string(), AttributeValue::S(vote_sk));
-        crate::dynamo::put_item(&state, item, "Vote").await?;
+        crate::dynamo::put_item_upsert(&state, item, "Vote").await?;
 
         if body.value == 1 {
             (1, -1) // was downvote, now upvote
@@ -305,13 +305,16 @@ pub async fn vote_kural(
                 .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
         item.insert("pk".to_string(), AttributeValue::S(vote_pk.clone()));
         item.insert("sk".to_string(), AttributeValue::S(vote_sk));
-        crate::dynamo::put_item(&state, item, "Vote").await?;
+        crate::dynamo::put_item_upsert(&state, item, "Vote").await?;
         crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", 1).await?;
 
         if body.value == 1 { (1, 0) } else { (0, 1) }
     };
 
-    // Atomic ADD for vote counts — returns new values (fixes race condition)
+    // Atomic ADD for vote counts — returns new values.
+    // NOTE: The score recomputation below is a separate write, so there's a brief window
+    // where vote counts are updated but community_score/composite_score are stale.
+    // This is acceptable since scores are advisory and self-correct on the next vote.
     let update_result = state
         .dynamo
         .update_item()
@@ -443,47 +446,54 @@ async fn submit_judge_score(
     scores_field: &str,
     avg_field: &str,
 ) -> Result<(StatusCode, Json<JudgeScore>), AppError> {
-    // Read current kural
-    let mut kural: Kural = crate::dynamo::get_item(state, &format!("KURAL#{kural_id}"), "META")
-        .await?
-        .ok_or(AppError::NotFound)?;
-
     let judge_score = JudgeScore {
         score,
         reasoning: reasoning.clone(),
     };
 
-    // Update the appropriate scores map
-    let (new_avg, scores_map) = if scores_field == "meaning_scores" {
-        kural
-            .meaning_scores
-            .insert(bot_id.to_string(), judge_score.clone());
-        let avg = kural.meaning_scores.values().map(|s| s.score).sum::<f64>()
-            / kural.meaning_scores.len() as f64;
-        (avg, &kural.meaning_scores)
-    } else {
-        kural
-            .prosody_scores
-            .insert(bot_id.to_string(), judge_score.clone());
-        let avg = kural.prosody_scores.values().map(|s| s.score).sum::<f64>()
-            / kural.prosody_scores.len() as f64;
-        (avg, &kural.prosody_scores)
-    };
-
-    // Serialize the scores map
-    let scores_av: AttributeValue = serde_dynamo::to_attribute_value(scores_map)
+    // Atomically SET the individual map entry using a document path (e.g., meaning_scores.#bot_id).
+    // This avoids the previous read-modify-write race where concurrent judge submissions
+    // could overwrite each other's scores.
+    let score_av: AttributeValue = serde_dynamo::to_attribute_value(&judge_score)
         .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
 
-    // Recompute composite
-    let avg_meaning = if scores_field == "meaning_scores" {
-        Some(new_avg)
+    state
+        .dynamo
+        .update_item()
+        .table_name(&state.table)
+        .key("pk", AttributeValue::S(format!("KURAL#{kural_id}")))
+        .key("sk", AttributeValue::S("META".to_string()))
+        .update_expression("SET #sf.#bid = :score")
+        .expression_attribute_names("#sf", scores_field)
+        .expression_attribute_names("#bid", bot_id)
+        .expression_attribute_values(":score", score_av)
+        .condition_expression("attribute_exists(pk)")
+        .send()
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("ConditionalCheckFailedException") {
+                AppError::NotFound
+            } else {
+                AppError::Internal(format!("DynamoDB error: {e}"))
+            }
+        })?;
+
+    // Re-read the kural to compute avg and composite from the now-updated scores map.
+    // This is safe: even if another judge wrote concurrently, we see all scores and
+    // recompute correctly. The brief window where avg/composite are stale self-corrects
+    // on the next judge submission.
+    let kural: Kural = crate::dynamo::get_item(state, &format!("KURAL#{kural_id}"), "META")
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let (new_avg, avg_meaning, avg_prosody) = if scores_field == "meaning_scores" {
+        let avg = kural.meaning_scores.values().map(|s| s.score).sum::<f64>()
+            / kural.meaning_scores.len() as f64;
+        (avg, Some(avg), kural.avg_prosody)
     } else {
-        kural.avg_meaning
-    };
-    let avg_prosody = if scores_field == "prosody_scores" {
-        Some(new_avg)
-    } else {
-        kural.avg_prosody
+        let avg = kural.prosody_scores.values().map(|s| s.score).sum::<f64>()
+            / kural.prosody_scores.len() as f64;
+        (avg, kural.avg_meaning, Some(avg))
     };
 
     let weights = ScoreWeights::load(state).await?;
@@ -495,10 +505,8 @@ async fn submit_judge_score(
         .table_name(&state.table)
         .key("pk", AttributeValue::S(format!("KURAL#{kural_id}")))
         .key("sk", AttributeValue::S("META".to_string()))
-        .update_expression("SET #sf = :scores, #af = :avg, composite_score = :comp")
-        .expression_attribute_names("#sf", scores_field)
+        .update_expression("SET #af = :avg, composite_score = :comp")
         .expression_attribute_names("#af", avg_field)
-        .expression_attribute_values(":scores", scores_av)
         .expression_attribute_values(":avg", AttributeValue::N(new_avg.to_string()))
         .expression_attribute_values(
             ":comp",

@@ -240,7 +240,7 @@ pub async fn vote_request(
                 .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
         item.insert("pk".to_string(), AttributeValue::S(vote_pk));
         item.insert("sk".to_string(), AttributeValue::S(vote_sk));
-        crate::dynamo::put_item(&state, item, "Vote").await?;
+        crate::dynamo::put_item_upsert(&state, item, "Vote").await?;
 
         (body.value - old_vote.value) as i64
     } else {
@@ -255,7 +255,7 @@ pub async fn vote_request(
                 .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
         item.insert("pk".to_string(), AttributeValue::S(vote_pk));
         item.insert("sk".to_string(), AttributeValue::S(vote_sk));
-        crate::dynamo::put_item(&state, item, "Vote").await?;
+        crate::dynamo::put_item_upsert(&state, item, "Vote").await?;
 
         crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", 1).await?;
         body.value as i64

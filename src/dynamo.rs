@@ -84,8 +84,34 @@ async fn get_item_inner<T: DeserializeOwned>(
     }
 }
 
-/// Write an item with an entity_type discriminator.
+/// Write a new item with an entity_type discriminator.
+/// Uses `attribute_not_exists(pk)` to prevent silent overwrites from UUID collisions or retries.
 pub async fn put_item(
+    state: &AppState,
+    mut item: HashMap<String, AttributeValue>,
+    entity_type: &str,
+) -> Result<(), AppError> {
+    item.insert(
+        "entity_type".to_string(),
+        AttributeValue::S(entity_type.to_string()),
+    );
+
+    state
+        .dynamo
+        .put_item()
+        .table_name(&state.table)
+        .set_item(Some(item))
+        .condition_expression("attribute_not_exists(pk)")
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("DynamoDB put error: {e}")))?;
+
+    Ok(())
+}
+
+/// Write or overwrite an item (upsert). Use for items where overwrites are expected,
+/// such as vote records when a user changes their vote direction.
+pub async fn put_item_upsert(
     state: &AppState,
     mut item: HashMap<String, AttributeValue>,
     entity_type: &str,
@@ -208,6 +234,7 @@ pub async fn batch_get_items<T: DeserializeOwned>(
     }
 
     let mut results: HashMap<String, T> = HashMap::with_capacity(keys.len());
+    let base_backoff = std::time::Duration::from_millis(50);
 
     for chunk in keys.chunks(100) {
         let dynamo_keys: Vec<HashMap<String, AttributeValue>> = chunk
@@ -230,6 +257,7 @@ pub async fn batch_get_items<T: DeserializeOwned>(
         );
 
         let mut unprocessed = Some(request_items);
+        let mut retry_count: u32 = 0;
 
         while let Some(items_to_process) = unprocessed.take() {
             if items_to_process
@@ -262,12 +290,15 @@ pub async fn batch_get_items<T: DeserializeOwned>(
                 }
             }
 
-            // Retry unprocessed keys
+            // Retry unprocessed keys with exponential backoff to avoid amplifying throttling
             if let Some(remaining) = result.unprocessed_keys
                 && remaining
                     .get(&state.table)
                     .is_some_and(|ka| !ka.keys().is_empty())
             {
+                retry_count += 1;
+                let backoff = base_backoff * 2u32.pow(retry_count.min(5));
+                tokio::time::sleep(backoff).await;
                 unprocessed = Some(remaining);
             }
         }
