@@ -83,7 +83,7 @@ All entities share one table with composite `pk + sk` keys and 7 GSIs for differ
 | GSI4 | `BYREQ#{request_id}`         | Kurals for a request          |
 | GSI5 | `BYBOT#{bot_id}`             | Kurals by bot                 |
 | GSI6 | `BOTTYPE#{type}`             | Bots by type                  |
-| GSI7 | `ALLKURALS`                  | Global kural listing          |
+| GSI7 | `ALLKURALS#{shard}`          | Global kural listing (sharded across 10 partitions) |
 
 ## API Surface
 

@@ -13,6 +13,10 @@ use crate::models::pagination::PaginatedResponse;
 use crate::models::score_weight::ScoreWeights;
 use crate::state::AppState;
 
+/// Number of shards for the GSI7 ALLKURALS partition key.
+/// Distributes kurals across multiple partitions to avoid hot-partition throttling.
+pub const ALLKURALS_SHARD_COUNT: u32 = 10;
+
 #[derive(Deserialize)]
 pub struct SubmitKural {
     pub request_id: Uuid,
@@ -123,10 +127,12 @@ pub async fn submit_kural(
         AttributeValue::S(format!("BYBOT#{}", bot.id)),
     );
     item.insert("gsi5sk".to_string(), AttributeValue::S(now.to_rfc3339()));
-    // GSI7: all kurals (replaces full table scan)
+    // GSI7: all kurals, sharded across ALLKURALS_SHARD_COUNT partitions
+    // to avoid hot-partition bottleneck as kural count grows.
+    let shard = kural.id.as_u128() % ALLKURALS_SHARD_COUNT as u128;
     item.insert(
         "gsi7pk".to_string(),
-        AttributeValue::S("ALLKURALS".to_string()),
+        AttributeValue::S(format!("ALLKURALS#{shard}")),
     );
     item.insert("gsi7sk".to_string(), AttributeValue::S(now.to_rfc3339()));
 
@@ -174,17 +180,33 @@ pub async fn list_kurals(
         )
         .await?
     } else {
-        // Query all kurals via GSI7 (replaces full table scan)
-        crate::dynamo::query_gsi::<Kural>(
-            &state,
-            "GSI7",
-            "gsi7pk",
-            "ALLKURALS",
-            false,
-            Some(limit as i32),
-            query.cursor.as_deref(),
-        )
-        .await?
+        // Query all kurals via GSI7, fanning out across all shards concurrently.
+        // Pagination cursors are not meaningful for sharded queries (results are merged
+        // and re-sorted in memory), so next_cursor is always None.
+        let shard_keys: Vec<String> = (0..ALLKURALS_SHARD_COUNT)
+            .map(|shard| format!("ALLKURALS#{shard}"))
+            .collect();
+        let shard_futures: Vec<_> = shard_keys
+            .iter()
+            .map(|key| {
+                crate::dynamo::query_gsi::<Kural>(
+                    &state,
+                    "GSI7",
+                    "gsi7pk",
+                    key,
+                    false,
+                    Some(limit as i32),
+                    None,
+                )
+            })
+            .collect();
+
+        let shard_results = futures::future::try_join_all(shard_futures).await?;
+        let all_items: Vec<Kural> = shard_results.into_iter().flat_map(|r| r.items).collect();
+        crate::dynamo::PagedResult {
+            items: all_items,
+            next_cursor: None,
+        }
     };
 
     let mut kurals = result.items;
@@ -345,6 +367,7 @@ pub async fn vote_kural(
         updated_kural.avg_prosody,
         &weights,
     );
+    let old_composite = updated_kural.composite_score;
 
     // Update scores
     state
@@ -371,6 +394,25 @@ pub async fn vote_kural(
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
+
+    // Update bot aggregate scores for the leaderboard
+    if let Some(new_comp) = composite_score {
+        let bot_pk = format!("BOT#{}", updated_kural.bot_id);
+        match old_composite {
+            Some(old_comp) => {
+                let delta = new_comp - old_comp;
+                crate::dynamo::atomic_add_f64(&state, &bot_pk, "total_composite", delta).await?;
+            }
+            None => {
+                let (comp_result, count_result) = tokio::join!(
+                    crate::dynamo::atomic_add_f64(&state, &bot_pk, "total_composite", new_comp),
+                    crate::dynamo::atomic_add(&state, &bot_pk, "scored_kural_count", 1),
+                );
+                comp_result?;
+                count_result?;
+            }
+        }
+    }
 
     Ok(Json(VoteResult {
         upvotes,
@@ -498,6 +540,7 @@ async fn submit_judge_score(
 
     let weights = ScoreWeights::load(state).await?;
     let composite = compute_composite(kural.community_score, avg_meaning, avg_prosody, &weights);
+    let old_composite = kural.composite_score;
 
     state
         .dynamo
@@ -518,6 +561,28 @@ async fn submit_judge_score(
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
+
+    // Update bot aggregate scores for the leaderboard.
+    // Use delta (new - old) so re-scoring a kural adjusts correctly.
+    if let Some(new_comp) = composite {
+        let bot_pk = format!("BOT#{}", kural.bot_id);
+        match old_composite {
+            Some(old_comp) => {
+                // Re-scored: only add the delta
+                let delta = new_comp - old_comp;
+                crate::dynamo::atomic_add_f64(state, &bot_pk, "total_composite", delta).await?;
+            }
+            None => {
+                // First composite score for this kural: add value and increment count
+                let (comp_result, count_result) = tokio::join!(
+                    crate::dynamo::atomic_add_f64(state, &bot_pk, "total_composite", new_comp),
+                    crate::dynamo::atomic_add(state, &bot_pk, "scored_kural_count", 1),
+                );
+                comp_result?;
+                count_result?;
+            }
+        }
+    }
 
     Ok((StatusCode::CREATED, Json(judge_score)))
 }

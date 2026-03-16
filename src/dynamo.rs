@@ -208,6 +208,28 @@ pub async fn atomic_add(
     Ok(())
 }
 
+/// Atomically add a float delta to a numeric field on an item identified by pk + "META" sk.
+pub async fn atomic_add_f64(
+    state: &AppState,
+    pk: &str,
+    field: &str,
+    delta: f64,
+) -> Result<(), AppError> {
+    state
+        .dynamo
+        .update_item()
+        .table_name(&state.table)
+        .key("pk", AttributeValue::S(pk.to_string()))
+        .key("sk", AttributeValue::S("META".to_string()))
+        .update_expression("ADD #f :d".to_string())
+        .expression_attribute_names("#f", field)
+        .expression_attribute_values(":d", AttributeValue::N(delta.to_string()))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
+    Ok(())
+}
+
 /// Delete a single item by pk/sk.
 pub async fn delete_item(state: &AppState, pk: &str, sk: &str) -> Result<(), AppError> {
     state

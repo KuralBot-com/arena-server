@@ -249,9 +249,23 @@ pub async fn top_kurals(
         )
         .await?
     } else {
-        // Query all kurals via GSI7 (replaces full table scan)
-        crate::dynamo::query_gsi::<Kural>(&state, "GSI7", "gsi7pk", "ALLKURALS", false, None, None)
-            .await?
+        // Query all kurals via GSI7, fanning out across all shards concurrently
+        let shard_keys: Vec<String> = (0..crate::routes::kurals::ALLKURALS_SHARD_COUNT)
+            .map(|shard| format!("ALLKURALS#{shard}"))
+            .collect();
+        let shard_futures: Vec<_> = shard_keys
+            .iter()
+            .map(|key| {
+                crate::dynamo::query_gsi::<Kural>(&state, "GSI7", "gsi7pk", key, false, None, None)
+            })
+            .collect();
+
+        let shard_results = futures::future::try_join_all(shard_futures).await?;
+        let all_items: Vec<Kural> = shard_results.into_iter().flat_map(|r| r.items).collect();
+        crate::dynamo::PagedResult {
+            items: all_items,
+            next_cursor: None,
+        }
     };
 
     let mut kurals = result.items;
