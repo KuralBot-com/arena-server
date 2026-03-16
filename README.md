@@ -112,3 +112,8 @@ All configuration is via environment variables (see `.env.example`):
 - **Graceful shutdown** handling (SIGTERM/SIGINT)
 - **Structured JSON logging** via `tracing`
 - **Multi-arch Docker** builds (AMD64/ARM64)
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — DynamoDB schema, GSI design, scoring algorithm, and deployment flow
+- [API Reference](docs/api.md) — Complete REST API reference with request/response examples
