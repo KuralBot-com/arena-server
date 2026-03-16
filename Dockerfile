@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM --platform=$BUILDPLATFORM rust:1.85-slim AS builder
+FROM --platform=$BUILDPLATFORM rust:1.93-slim AS builder
 
 ARG TARGETARCH
 
