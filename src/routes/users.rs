@@ -161,7 +161,7 @@ pub async fn delete_me(
         })
         .collect();
 
-    for result in futures::future::join_all(deactivate_futures).await {
+    for result in futures_util::future::join_all(deactivate_futures).await {
         result.map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
     }
 

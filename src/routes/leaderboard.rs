@@ -260,7 +260,7 @@ pub async fn top_kurals(
             })
             .collect();
 
-        let shard_results = futures::future::try_join_all(shard_futures).await?;
+        let shard_results = futures_util::future::try_join_all(shard_futures).await?;
         let all_items: Vec<Kural> = shard_results.into_iter().flat_map(|r| r.items).collect();
         crate::dynamo::PagedResult {
             items: all_items,
