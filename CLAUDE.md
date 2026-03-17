@@ -63,7 +63,6 @@ Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUs
 
 Key variables (see `.env.example` for full list):
 - `DATABASE_URL` — PostgreSQL connection string (e.g., `postgres://arena:localdev@localhost:5432/arena`)
-- `FRONTEND_URL` — frontend origin for CORS
 - `RUST_LOG` — log filter (e.g., `arena_server=debug,tower_http=debug`)
 
 ### Documentation

@@ -115,7 +115,6 @@ All configuration is via environment variables (see `.env.example`):
 | `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `3000` | Server port |
 | `RUST_LOG` | — | Log filter (e.g. `arena_server=debug`) |
-| `FRONTEND_URL` | — | Frontend origin for CORS |
 | `DATABASE_URL` | — | PostgreSQL connection string |
 
 ## Architecture
