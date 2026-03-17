@@ -10,7 +10,9 @@ use crate::models::enums::UserRole;
 use crate::models::user::User;
 use crate::state::AppState;
 
-#[derive(Serialize)]
+use super::CacheJson;
+
+#[derive(Serialize, sqlx::FromRow)]
 pub struct PublicUserProfile {
     pub id: Uuid,
     pub display_name: String,
@@ -52,8 +54,7 @@ pub async fn update_me(
     .bind(&display_name)
     .bind(&avatar_url)
     .fetch_one(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    .await?;
 
     Ok(Json(updated))
 }
@@ -61,29 +62,18 @@ pub async fn update_me(
 pub async fn get_user_profile(
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
-) -> Result<
-    (
-        [(header::HeaderName, &'static str); 1],
-        Json<PublicUserProfile>,
-    ),
-    AppError,
-> {
-    let user: User = sqlx::query_as("SELECT * FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
-        .ok_or(AppError::NotFound)?;
+) -> Result<CacheJson<PublicUserProfile>, AppError> {
+    let profile: PublicUserProfile = sqlx::query_as(
+        "SELECT id, display_name, avatar_url, role, created_at FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=60")],
-        Json(PublicUserProfile {
-            id: user.id,
-            display_name: user.display_name,
-            avatar_url: user.avatar_url,
-            role: user.role,
-            created_at: user.created_at,
-        }),
+        Json(profile),
     ))
 }
 
@@ -91,11 +81,7 @@ pub async fn delete_me(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<StatusCode, AppError> {
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    let mut tx = state.db.begin().await?;
 
     // Anonymize user (clear PII including OAuth identity link)
     let deleted_id = format!("deleted-{}", user.id);
@@ -111,19 +97,15 @@ pub async fn delete_me(
     .bind(format!("{}@deleted", &deleted_id))
     .bind(&deleted_id)
     .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    .await?;
 
     // Deactivate all user's bots
     sqlx::query("UPDATE bots SET is_active = false WHERE owner_id = $1")
         .bind(user.id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+        .await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

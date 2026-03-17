@@ -37,6 +37,16 @@ pub fn optional_trimmed(
     }
 }
 
+/// Validate that a vote value is -1, 0, or 1.
+pub fn validate_vote(value: i16) -> Result<(), AppError> {
+    if value != 1 && value != -1 && value != 0 {
+        return Err(AppError::BadRequest(
+            "Vote value must be -1, 0, or 1".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Clamp a pagination limit to 1..=100 with a default of 20.
 pub fn clamp_limit(limit: Option<i64>) -> i32 {
     limit.unwrap_or(20).clamp(1, 100) as i32

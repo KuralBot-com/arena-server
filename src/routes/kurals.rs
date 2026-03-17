@@ -12,7 +12,7 @@ use crate::models::pagination::PaginatedResponse;
 use crate::models::score_weight::ScoreWeights;
 use crate::state::AppState;
 
-type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
+use super::CacheJson;
 
 #[derive(Deserialize)]
 pub struct SubmitKural {
@@ -76,8 +76,7 @@ pub async fn submit_kural(
         sqlx::query_scalar("SELECT status FROM requests WHERE id = $1")
             .bind(body.request_id)
             .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+            .await?;
 
     match status {
         Some(crate::models::enums::RequestStatus::Open) => {}
@@ -95,8 +94,7 @@ pub async fn submit_kural(
     .bind(bot.id)
     .bind(&raw_text)
     .fetch_one(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    .await?;
 
     Ok((StatusCode::CREATED, Json(kural)))
 }
@@ -195,14 +193,11 @@ pub async fn list_kurals(
         .fetch_all(&state.db)
         .await
     } else {
-        sqlx::query_as(
-            "SELECT * FROM kural_scores ORDER BY created_at DESC, id DESC LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await
-    }
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+        sqlx::query_as("SELECT * FROM kural_scores ORDER BY created_at DESC, id DESC LIMIT $1")
+            .bind(limit)
+            .fetch_all(&state.db)
+            .await
+    }?;
 
     let next_cursor = if kurals.len() == limit as usize {
         kurals
@@ -230,8 +225,7 @@ pub async fn get_kural(
     let kural: KuralWithScores = sqlx::query_as("SELECT * FROM kural_scores WHERE id = $1")
         .bind(kural_id)
         .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+        .await?
         .ok_or(AppError::NotFound)?;
 
     Ok(([(header::CACHE_CONTROL, "public, max-age=10")], Json(kural)))
@@ -243,30 +237,16 @@ pub async fn vote_kural(
     Path(kural_id): Path<Uuid>,
     Json(body): Json<VoteKuralBody>,
 ) -> Result<Json<VoteResult>, AppError> {
-    if body.value != 1 && body.value != -1 && body.value != 0 {
-        return Err(AppError::BadRequest(
-            "Vote value must be -1, 0, or 1".to_string(),
-        ));
-    }
+    crate::validate::validate_vote(body.value)?;
 
-    // Verify kural exists
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM kurals WHERE id = $1)")
-        .bind(kural_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
-
-    if !exists {
-        return Err(AppError::NotFound);
-    }
+    let mut tx = state.db.begin().await?;
 
     if body.value == 0 {
         sqlx::query("DELETE FROM kural_votes WHERE kural_id = $1 AND user_id = $2")
             .bind(kural_id)
             .bind(user.id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+            .execute(&mut *tx)
+            .await?;
     } else {
         sqlx::query(
             "INSERT INTO kural_votes (kural_id, user_id, value)
@@ -276,18 +256,19 @@ pub async fn vote_kural(
         .bind(kural_id)
         .bind(user.id)
         .bind(body.value)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+        .execute(&mut *tx)
+        .await?;
     }
 
     // Read computed scores from view
     let (upvotes, downvotes): (i64, i64) =
         sqlx::query_as("SELECT upvotes, downvotes FROM kural_scores WHERE id = $1")
             .bind(kural_id)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    tx.commit().await?;
 
     Ok(Json(VoteResult {
         upvotes,
@@ -302,23 +283,12 @@ pub async fn submit_meaning_score(
     Path(kural_id): Path<Uuid>,
     Json(body): Json<SubmitScore>,
 ) -> Result<(StatusCode, Json<JudgeScore>), AppError> {
-    if bot.bot_type != BotType::MeaningJudge {
-        return Err(AppError::Forbidden);
-    }
-
-    if !(0.0..=1.0).contains(&body.score) {
-        return Err(AppError::BadRequest(
-            "Score must be between 0.0 and 1.0".to_string(),
-        ));
-    }
-    let reasoning = crate::validate::optional_trimmed("reasoning", &body.reasoning, 2000)?;
-
-    submit_judge_score(
+    submit_score_for_type(
         &state,
+        bot,
         kural_id,
-        bot.id,
-        body.score,
-        reasoning,
+        body,
+        BotType::MeaningJudge,
         ScoreType::Meaning,
     )
     .await
@@ -330,7 +300,26 @@ pub async fn submit_prosody_score(
     Path(kural_id): Path<Uuid>,
     Json(body): Json<SubmitScore>,
 ) -> Result<(StatusCode, Json<JudgeScore>), AppError> {
-    if bot.bot_type != BotType::ProsodyJudge {
+    submit_score_for_type(
+        &state,
+        bot,
+        kural_id,
+        body,
+        BotType::ProsodyJudge,
+        ScoreType::Prosody,
+    )
+    .await
+}
+
+async fn submit_score_for_type(
+    state: &AppState,
+    bot: crate::models::bot::Bot,
+    kural_id: Uuid,
+    body: SubmitScore,
+    expected_bot_type: BotType,
+    score_type: ScoreType,
+) -> Result<(StatusCode, Json<JudgeScore>), AppError> {
+    if bot.bot_type != expected_bot_type {
         return Err(AppError::Forbidden);
     }
 
@@ -341,15 +330,7 @@ pub async fn submit_prosody_score(
     }
     let reasoning = crate::validate::optional_trimmed("reasoning", &body.reasoning, 2000)?;
 
-    submit_judge_score(
-        &state,
-        kural_id,
-        bot.id,
-        body.score,
-        reasoning,
-        ScoreType::Prosody,
-    )
-    .await
+    submit_judge_score(state, kural_id, bot.id, body.score, reasoning, score_type).await
 }
 
 async fn submit_judge_score(
@@ -360,18 +341,8 @@ async fn submit_judge_score(
     reasoning: Option<String>,
     score_type: ScoreType,
 ) -> Result<(StatusCode, Json<JudgeScore>), AppError> {
-    // Verify kural exists
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM kurals WHERE id = $1)")
-        .bind(kural_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
-
-    if !exists {
-        return Err(AppError::NotFound);
-    }
-
     // Upsert judge score (updated_at handled by trigger)
+    // FK constraint on kural_id will fail if kural doesn't exist
     sqlx::query(
         "INSERT INTO judge_scores (kural_id, bot_id, score_type, score, reasoning)
          VALUES ($1, $2, $3, $4, $5)
@@ -385,7 +356,16 @@ async fn submit_judge_score(
     .bind(&reasoning)
     .execute(&state.db)
     .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    .map_err(|e| {
+        if e.as_database_error()
+            .and_then(|de| de.constraint())
+            .is_some()
+        {
+            AppError::NotFound
+        } else {
+            AppError::Internal(format!("Database error: {e}"))
+        }
+    })?;
 
     Ok((StatusCode::CREATED, Json(JudgeScore { score, reasoning })))
 }
@@ -421,8 +401,7 @@ pub async fn get_scores(
     .bind(weights.meaning)
     .bind(weights.prosody)
     .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+    .await?
     .ok_or(AppError::NotFound)?;
 
     Ok(([(header::CACHE_CONTROL, "public, max-age=10")], Json(score)))

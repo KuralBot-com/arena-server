@@ -38,8 +38,7 @@ impl ScoreWeights {
         let row: Option<(serde_json::Value,)> =
             sqlx::query_as("SELECT value FROM config WHERE key = 'score_weights'")
                 .fetch_optional(&state.db)
-                .await
-                .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+                .await?;
 
         match row {
             Some((value,)) => {

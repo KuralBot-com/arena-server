@@ -11,7 +11,7 @@ use crate::models::pagination::PaginatedResponse;
 use crate::models::request::Request;
 use crate::state::AppState;
 
-type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
+use super::CacheJson;
 
 #[derive(Deserialize)]
 pub struct CreateRequest {
@@ -52,8 +52,7 @@ pub async fn create_request(
             .bind(user.id)
             .bind(&meaning)
             .fetch_one(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+            .await?;
 
     Ok((StatusCode::CREATED, Json(request)))
 }
@@ -76,8 +75,7 @@ pub async fn list_requests(
         .bind(c.id)
         .bind(limit)
         .fetch_all(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+        .await?
     } else {
         sqlx::query_as(
             "SELECT * FROM requests WHERE status = $1 ORDER BY created_at DESC, id DESC LIMIT $2",
@@ -85,8 +83,7 @@ pub async fn list_requests(
         .bind(status)
         .bind(limit)
         .fetch_all(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+        .await?
     };
 
     let next_cursor = if requests.len() == limit as usize {
@@ -115,8 +112,7 @@ pub async fn get_request(
     let request: Request = sqlx::query_as("SELECT * FROM requests WHERE id = $1")
         .bind(request_id)
         .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+        .await?
         .ok_or(AppError::NotFound)?;
 
     Ok((
@@ -140,8 +136,7 @@ pub async fn update_request_status(
             .bind(request_id)
             .bind(body.status)
             .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+            .await?
             .ok_or(AppError::NotFound)?;
 
     Ok(Json(request))
@@ -153,28 +148,9 @@ pub async fn vote_request(
     Path(request_id): Path<Uuid>,
     Json(body): Json<VoteBody>,
 ) -> Result<Json<RequestVoteResult>, AppError> {
-    if body.value != 1 && body.value != -1 && body.value != 0 {
-        return Err(AppError::BadRequest(
-            "Vote value must be -1, 0, or 1".to_string(),
-        ));
-    }
+    crate::validate::validate_vote(body.value)?;
 
-    // Verify request exists
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM requests WHERE id = $1)")
-        .bind(request_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
-
-    if !exists {
-        return Err(AppError::NotFound);
-    }
-
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    let mut tx = state.db.begin().await?;
 
     if body.value == 0 {
         // Remove vote
@@ -182,8 +158,7 @@ pub async fn vote_request(
             .bind(request_id)
             .bind(user.id)
             .execute(&mut *tx)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+            .await?;
     } else {
         // Upsert vote
         sqlx::query(
@@ -195,8 +170,7 @@ pub async fn vote_request(
         .bind(user.id)
         .bind(body.value)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+        .await?;
     }
 
     let vote_total: i64 = sqlx::query_scalar(
@@ -204,12 +178,9 @@ pub async fn vote_request(
     )
     .bind(request_id)
     .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    .await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    tx.commit().await?;
 
     Ok(Json(RequestVoteResult { vote_total }))
 }
@@ -242,8 +213,7 @@ pub async fn trending_requests(
     )
     .bind(limit)
     .fetch_all(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    .await?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=10")],

@@ -11,6 +11,8 @@ use crate::models::bot::Bot;
 use crate::models::enums::BotType;
 use crate::state::AppState;
 
+use super::CacheJson;
+
 #[derive(Deserialize)]
 pub struct CreateBot {
     pub bot_type: BotType,
@@ -64,8 +66,7 @@ pub async fn list_bots(
         sqlx::query_as("SELECT * FROM bots WHERE owner_id = $1 ORDER BY created_at DESC")
             .bind(user.id)
             .fetch_all(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+            .await?;
 
     Ok(Json(bots))
 }
@@ -73,12 +74,11 @@ pub async fn list_bots(
 pub async fn get_bot_public(
     State(state): State<AppState>,
     Path(bot_id): Path<Uuid>,
-) -> Result<([(header::HeaderName, &'static str); 1], Json<Bot>), AppError> {
+) -> Result<CacheJson<Bot>, AppError> {
     let bot: Bot = sqlx::query_as("SELECT * FROM bots WHERE id = $1")
         .bind(bot_id)
         .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+        .await?
         .ok_or(AppError::NotFound)?;
 
     Ok(([(header::CACHE_CONTROL, "public, max-age=60")], Json(bot)))
@@ -109,8 +109,7 @@ pub async fn update_bot(
             .bind(bot_id)
             .bind(user.id)
             .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+            .await?
             .ok_or(AppError::NotFound)?;
         return Ok(Json(bot));
     }
@@ -131,8 +130,7 @@ pub async fn update_bot(
     .bind(&model_name)
     .bind(&model_version)
     .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+    .await?
     .ok_or(AppError::NotFound)?;
 
     Ok(Json(updated))
@@ -150,8 +148,7 @@ pub async fn deactivate_bot(
     .bind(bot_id)
     .bind(user.id)
     .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+    .await?
     .rows_affected();
 
     if rows == 0 {

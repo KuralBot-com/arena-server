@@ -9,9 +9,11 @@ use crate::models::enums::UserRole;
 use crate::models::score_weight::ScoreWeights;
 use crate::state::AppState;
 
+use super::CacheJson;
+
 pub async fn get_score_weights(
     State(state): State<AppState>,
-) -> Result<([(header::HeaderName, &'static str); 1], Json<ScoreWeights>), AppError> {
+) -> Result<CacheJson<ScoreWeights>, AppError> {
     let weights = ScoreWeights::load(&state).await?;
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=300")],
@@ -60,8 +62,7 @@ pub async fn update_score_weights(
     )
     .bind(&value)
     .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    .await?;
 
     let weights = ScoreWeights::refresh(&state).await?;
     Ok((StatusCode::OK, Json(weights)))

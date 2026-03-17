@@ -1,10 +1,13 @@
+use axum::Json;
 use axum::Router;
-use axum::http::Request;
+use axum::http::{Request, header};
 use axum::routing::{get, post};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use crate::state::AppState;
+
+pub type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
 
 pub mod bots;
 pub mod health;

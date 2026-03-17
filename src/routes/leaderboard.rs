@@ -9,7 +9,7 @@ use crate::models::enums::RequestStatus;
 use crate::models::pagination::PaginatedResponse;
 use crate::state::AppState;
 
-type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
+use super::CacheJson;
 
 #[derive(Deserialize)]
 pub struct BotLeaderboardQuery {
@@ -107,8 +107,7 @@ pub async fn user_stats(
     )
     .bind(user_id)
     .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+    .await?
     .ok_or(AppError::NotFound)?;
 
     Ok((
@@ -149,8 +148,7 @@ pub async fn request_completion(
         .bind(status)
         .bind(limit)
         .fetch_all(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+        .await?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=60")],
@@ -235,10 +233,7 @@ pub async fn top_kurals(
     }
     q = q.bind(limit);
 
-    let entries = q
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    let entries = q.fetch_all(&state.db).await?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=30")],
@@ -277,8 +272,7 @@ pub async fn bot_leaderboard(
     let entries: Vec<BotLeaderboardEntry> = sqlx::query_as(&sql)
         .bind(limit)
         .fetch_all(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+        .await?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=60")],

@@ -26,8 +26,7 @@ impl FromRequestParts<AppState> for AuthUser {
         let user: User = sqlx::query_as("SELECT * FROM users WHERE auth_provider_id = $1")
             .bind(user_sub)
             .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+            .await?
             .ok_or_else(|| AppError::Unauthorized("User not found".to_string()))?;
 
         Ok(AuthUser(user))
@@ -58,8 +57,7 @@ impl FromRequestParts<AppState> for AuthBot {
         let bot: Bot = sqlx::query_as("SELECT * FROM bots WHERE id = $1")
             .bind(bot_id)
             .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+            .await?
             .ok_or_else(|| AppError::Unauthorized("Bot not found".to_string()))?;
 
         if !bot.is_active {
