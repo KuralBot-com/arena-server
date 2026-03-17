@@ -2,13 +2,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use dotenvy::dotenv;
+use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::RwLock;
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod config;
-mod dynamo;
+mod db;
 mod error;
 mod extractors;
 mod models;
@@ -57,30 +58,28 @@ async fn main() {
 
     let cfg = config::Config::from_env();
 
-    // Build AWS SDK config
-    let mut aws_config_builder = aws_config::from_env();
-    if let Some(endpoint) = &cfg.dynamodb_endpoint {
-        aws_config_builder = aws_config_builder.endpoint_url(endpoint);
-    }
-    let aws_cfg = aws_config_builder.load().await;
+    // Connect to PostgreSQL
+    let pool = PgPool::connect(&cfg.database_url)
+        .await
+        .expect("Failed to connect to PostgreSQL");
 
-    let dynamo_client = aws_sdk_dynamodb::Client::new(&aws_cfg);
+    // Run migrations
+    sqlx::migrate!()
+        .run(&pool)
+        .await
+        .expect("Failed to run database migrations");
 
-    let table = cfg.dynamodb_table.clone();
-
-    // Build state with default weights first, then load from DynamoDB
     let state = AppState {
-        dynamo: dynamo_client,
-        table,
+        db: pool,
         config: Arc::new(cfg),
         score_weights: Arc::new(RwLock::new(ScoreWeights::default())),
     };
 
-    // Load score weights from DynamoDB into cache
-    match ScoreWeights::load_from_dynamo(&state).await {
+    // Load score weights from PostgreSQL into cache
+    match ScoreWeights::load_from_db(&state).await {
         Ok(weights) => {
             *state.score_weights.write().await = weights;
-            tracing::info!("Score weights loaded from DynamoDB");
+            tracing::info!("Score weights loaded from database");
         }
         Err(e) => {
             tracing::warn!("Failed to load score weights, using defaults: {e}");

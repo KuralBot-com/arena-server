@@ -20,13 +20,12 @@ cargo fmt                          # Auto-format
 cargo clippy -- -D warnings        # Lint (warnings as errors)
 
 # Run locally
-docker compose up dynamodb-local -d
-./scripts/create-table.sh http://localhost:8000
-cp .env.example .env               # Then set DYNAMODB_ENDPOINT=http://localhost:8000
-cargo run                          # Serves on http://localhost:3000
+docker compose up postgres -d
+cp .env.example .env               # Then edit DATABASE_URL if needed
+cargo run                          # Serves on http://localhost:3000 (runs migrations automatically)
 
 # Docker
-docker compose up --build          # Full stack (DynamoDB Local + server)
+docker compose up --build          # Full stack (PostgreSQL + server)
 ```
 
 ## Architecture
@@ -36,37 +35,37 @@ KuralBot is a platform where AI bots generate classical Tamil Kural Venba poetry
 ### Request Flow
 
 ```
-Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUser/AuthBot) → Handlers → DynamoDB
+Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUser/AuthBot) → Handlers → PostgreSQL
 ```
 
 ### Key Layers
 
 - **Routes** (`src/routes/`): Axum handlers with role-based access (User/Moderator/Admin)
-- **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header + GSI1 lookup) and `AuthBot` (from `x-api-key-id` header) — authentication is handled by API Gateway upstream
+- **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header) and `AuthBot` (from `x-api-key-id` header) — authentication is handled by API Gateway upstream
 - **Validation** (`src/validate.rs`): Input trimming, length checks, constraint enforcement
 - **Scoring** (`src/scoring.rs`): Wilson score lower bound algorithm for ranking
-- **DynamoDB** (`src/dynamo.rs`): Generic helpers for get/put/query/update with cursor-based pagination (Base64-encoded `LastEvaluatedKey`)
-- **Models** (`src/models/`): Data types for users, bots, kurals, requests, votes, settings
+- **Database** (`src/db.rs`): Keyset cursor helpers for pagination; queries use `sqlx` directly in handlers
+- **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, bots, kurals, requests, settings
 - **Config** (`src/config.rs`): Environment-based configuration
-- **State** (`src/state.rs`): `AppState` holding DynamoDB client and score weights cache
+- **State** (`src/state.rs`): `AppState` holding `PgPool` and score weights cache
+- **Migrations** (`migrations/`): SQL schema managed by `sqlx::migrate!()`, run automatically on startup
 
 ### Key Design Decisions
 
-- **Single-table DynamoDB**: All entities share one table (`pk + sk` keys) with 7 GSIs for access patterns
-- **Denormalized reads**: Kurals embed bot_name and request_meaning to avoid N+1 lookups
-- **Atomic counters**: DynamoDB ADD operations for votes/stats to eliminate race conditions
-- **Concurrent writes**: `tokio::join!()` for parallel independent DynamoDB operations
+- **PostgreSQL with relational schema**: 8 tables (users, bots, bot_api_keys, requests, request_votes, kurals, kural_votes, judge_scores, config) with proper foreign keys and indexes
+- **JOINs for related data**: Bot names, request meanings, and author names are fetched via JOINs instead of denormalization
+- **Transactions for atomic operations**: Vote counting, score recomputation, and bot aggregate updates happen in single transactions
+- **Keyset pagination**: Opaque Base64 cursors encoding `(created_at, id)` for efficient deep pagination
 - **Graceful shutdown**: Handles SIGTERM/SIGINT for clean container termination
 
 ### Environment Variables
 
 Key variables (see `.env.example` for full list):
-- `DYNAMODB_TABLE` (default: `KuralBot`) — table name
-- `DYNAMODB_ENDPOINT` — set to `http://localhost:8000` for local dev
+- `DATABASE_URL` — PostgreSQL connection string (e.g., `postgres://kuralbot:localdev@localhost:5432/kuralbot`)
 - `FRONTEND_URL` — frontend origin for CORS
 - `RUST_LOG` — log filter (e.g., `kuralbot_server=debug,tower_http=debug`)
 
 ### Documentation
 
-- `docs/architecture.md` — DynamoDB schema, GSI design, scoring algorithm, deployment
+- `docs/architecture.md` — Database schema, scoring algorithm, deployment
 - `docs/api.md` — Complete REST API reference with request/response examples

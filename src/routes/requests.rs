@@ -1,4 +1,3 @@
-use aws_sdk_dynamodb::types::AttributeValue;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -19,7 +18,6 @@ pub struct CreateRequest {
 
 #[derive(Deserialize)]
 pub struct ListRequestsQuery {
-    pub sort: Option<String>,
     pub status: Option<RequestStatus>,
     pub limit: Option<i64>,
     pub cursor: Option<String>,
@@ -47,41 +45,13 @@ pub async fn create_request(
 ) -> Result<(StatusCode, Json<Request>), AppError> {
     let meaning = crate::validate::trimmed_non_empty("meaning", &body.meaning, 2000)?;
 
-    let now = chrono::Utc::now();
-    let request = Request {
-        id: Uuid::new_v4(),
-        author_id: user.id,
-        meaning,
-        status: RequestStatus::Open,
-        vote_total: 0,
-        kural_count: 0,
-        created_at: now,
-        updated_at: now,
-    };
-
-    let mut item: std::collections::HashMap<String, AttributeValue> =
-        serde_dynamo::to_item(&request)
-            .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
-
-    item.insert(
-        "pk".to_string(),
-        AttributeValue::S(format!("REQ#{}", request.id)),
-    );
-    item.insert("sk".to_string(), AttributeValue::S("META".to_string()));
-    // GSI3: requests by status
-    item.insert(
-        "gsi3pk".to_string(),
-        AttributeValue::S("RSTATUS#open".to_string()),
-    );
-    item.insert("gsi3sk".to_string(), AttributeValue::S(now.to_rfc3339()));
-
-    let user_pk = format!("USER#{}", user.id);
-    let (put_result, counter_result) = tokio::join!(
-        crate::dynamo::put_item(&state, item, "Request"),
-        crate::dynamo::atomic_add(&state, &user_pk, "requests_created", 1),
-    );
-    put_result?;
-    counter_result?;
+    let request: Request =
+        sqlx::query_as("INSERT INTO requests (author_id, meaning) VALUES ($1, $2) RETURNING *")
+            .bind(user.id)
+            .bind(&meaning)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
     Ok((StatusCode::CREATED, Json(request)))
 }
@@ -92,35 +62,43 @@ pub async fn list_requests(
 ) -> Result<Json<PaginatedResponse<Request>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
     let status = query.status.unwrap_or(RequestStatus::Open);
-    let status_str = serde_json::to_value(status)
-        .map_err(|e| AppError::Internal(format!("Serialize error: {e}")))?
-        .as_str()
-        .unwrap_or("open")
-        .to_string();
 
-    let scan_forward = query.sort.as_deref() == Some("oldest");
+    let requests: Vec<Request> = if let Some(cursor) = &query.cursor {
+        let c = crate::db::decode_cursor(cursor)?;
+        sqlx::query_as(
+            "SELECT * FROM requests WHERE status = $1 AND (created_at, id) < ($2, $3)
+             ORDER BY created_at DESC, id DESC LIMIT $4",
+        )
+        .bind(status)
+        .bind(c.created_at)
+        .bind(c.id)
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+    } else {
+        sqlx::query_as(
+            "SELECT * FROM requests WHERE status = $1 ORDER BY created_at DESC, id DESC LIMIT $2",
+        )
+        .bind(status)
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+    };
 
-    let result = crate::dynamo::query_gsi::<Request>(
-        &state,
-        "GSI3",
-        "gsi3pk",
-        &format!("RSTATUS#{status_str}"),
-        scan_forward,
-        Some(limit),
-        query.cursor.as_deref(),
-    )
-    .await?;
-
-    let mut requests = result.items;
-
-    // In-memory sort for trending (cursor pagination not meaningful here)
-    if query.sort.as_deref() == Some("trending") {
-        requests.sort_by(|a, b| b.vote_total.cmp(&a.vote_total));
-    }
+    let next_cursor = if requests.len() == limit as usize {
+        requests
+            .last()
+            .map(|r| crate::db::encode_cursor(r.created_at, r.id))
+            .transpose()?
+    } else {
+        None
+    };
 
     Ok(Json(PaginatedResponse {
         data: requests,
-        next_cursor: result.next_cursor,
+        next_cursor,
         limit: limit as i64,
     }))
 }
@@ -129,8 +107,11 @@ pub async fn get_request(
     State(state): State<AppState>,
     Path(request_id): Path<Uuid>,
 ) -> Result<Json<Request>, AppError> {
-    let request: Request = crate::dynamo::get_item(&state, &format!("REQ#{request_id}"), "META")
-        .await?
+    let request: Request = sqlx::query_as("SELECT * FROM requests WHERE id = $1")
+        .bind(request_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
         .ok_or(AppError::NotFound)?;
 
     Ok(Json(request))
@@ -146,42 +127,14 @@ pub async fn update_request_status(
         return Err(AppError::Forbidden);
     }
 
-    let status_str = serde_json::to_value(body.status)
-        .map_err(|e| AppError::Internal(format!("Serialize error: {e}")))?
-        .as_str()
-        .unwrap_or("open")
-        .to_string();
-
-    let result = state
-        .dynamo
-        .update_item()
-        .table_name(&state.table)
-        .key("pk", AttributeValue::S(format!("REQ#{request_id}")))
-        .key("sk", AttributeValue::S("META".to_string()))
-        .update_expression("SET #st = :st, gsi3pk = :gsi3pk, updated_at = :now")
-        .expression_attribute_names("#st", "status")
-        .expression_attribute_values(":st", AttributeValue::S(status_str.clone()))
-        .expression_attribute_values(
-            ":gsi3pk",
-            AttributeValue::S(format!("RSTATUS#{status_str}")),
-        )
-        .expression_attribute_values(":now", AttributeValue::S(chrono::Utc::now().to_rfc3339()))
-        .condition_expression("attribute_exists(pk)")
-        .return_values(aws_sdk_dynamodb::types::ReturnValue::AllNew)
-        .send()
-        .await
-        .map_err(|e| {
-            let msg = format!("{e}");
-            if msg.contains("ConditionalCheckFailed") {
-                AppError::NotFound
-            } else {
-                AppError::Internal(format!("DynamoDB error: {e}"))
-            }
-        })?;
-
-    let item = result.attributes.ok_or(AppError::NotFound)?;
-    let request: Request = serde_dynamo::from_item(item)
-        .map_err(|e| AppError::Internal(format!("Deserialization error: {e}")))?;
+    let request: Request =
+        sqlx::query_as("UPDATE requests SET status = $2 WHERE id = $1 RETURNING *")
+            .bind(request_id)
+            .bind(body.status)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
+            .ok_or(AppError::NotFound)?;
 
     Ok(Json(request))
 }
@@ -199,117 +152,90 @@ pub async fn vote_request(
     }
 
     // Verify request exists
-    let _request: Request = crate::dynamo::get_item(&state, &format!("REQ#{request_id}"), "META")
-        .await?
-        .ok_or(AppError::NotFound)?;
-
-    let vote_pk = format!("REQ#{request_id}");
-    let vote_sk = format!("VOTE#{}", user.id);
-
-    // Check existing vote (consistent read to prevent double-voting)
-    let existing: Option<crate::models::vote::Vote> =
-        crate::dynamo::get_item_consistent(&state, &vote_pk, &vote_sk).await?;
-
-    let delta: i64 = if body.value == 0 {
-        // Remove vote
-        if let Some(old_vote) = existing {
-            crate::dynamo::delete_item(&state, &vote_pk, &vote_sk).await?;
-            let delta = -(old_vote.value as i64);
-            crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", -1)
-                .await?;
-            delta
-        } else {
-            return Ok(Json(RequestVoteResult {
-                vote_total: _request.vote_total,
-            }));
-        }
-    } else if let Some(old_vote) = existing {
-        if old_vote.value == body.value {
-            return Ok(Json(RequestVoteResult {
-                vote_total: _request.vote_total,
-            }));
-        }
-        // Change vote direction
-        let vote_item = crate::models::vote::Vote {
-            user_id: user.id,
-            value: body.value,
-            created_at: old_vote.created_at,
-        };
-        let mut item: std::collections::HashMap<String, AttributeValue> =
-            serde_dynamo::to_item(&vote_item)
-                .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
-        item.insert("pk".to_string(), AttributeValue::S(vote_pk));
-        item.insert("sk".to_string(), AttributeValue::S(vote_sk));
-        crate::dynamo::put_item_upsert(&state, item, "Vote").await?;
-
-        (body.value - old_vote.value) as i64
-    } else {
-        // New vote
-        let vote_item = crate::models::vote::Vote {
-            user_id: user.id,
-            value: body.value,
-            created_at: chrono::Utc::now(),
-        };
-        let mut item: std::collections::HashMap<String, AttributeValue> =
-            serde_dynamo::to_item(&vote_item)
-                .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
-        item.insert("pk".to_string(), AttributeValue::S(vote_pk));
-        item.insert("sk".to_string(), AttributeValue::S(vote_sk));
-        crate::dynamo::put_item_upsert(&state, item, "Vote").await?;
-
-        crate::dynamo::atomic_add(&state, &format!("USER#{}", user.id), "votes_cast", 1).await?;
-        body.value as i64
-    };
-
-    // Use RETURN_VALUES to get the updated total without a separate read
-    let update_result = state
-        .dynamo
-        .update_item()
-        .table_name(&state.table)
-        .key("pk", AttributeValue::S(format!("REQ#{request_id}")))
-        .key("sk", AttributeValue::S("META".to_string()))
-        .update_expression("ADD vote_total :d")
-        .expression_attribute_values(":d", AttributeValue::N(delta.to_string()))
-        .return_values(aws_sdk_dynamodb::types::ReturnValue::AllNew)
-        .send()
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM requests WHERE id = $1)")
+        .bind(request_id)
+        .fetch_one(&state.db)
         .await
-        .map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
-    let updated_item = update_result.attributes.ok_or(AppError::NotFound)?;
-    let updated_request: Request = serde_dynamo::from_item(updated_item)
-        .map_err(|e| AppError::Internal(format!("Deserialization error: {e}")))?;
+    if !exists {
+        return Err(AppError::NotFound);
+    }
 
-    Ok(Json(RequestVoteResult {
-        vote_total: updated_request.vote_total,
-    }))
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+
+    if body.value == 0 {
+        // Remove vote
+        sqlx::query("DELETE FROM request_votes WHERE request_id = $1 AND user_id = $2")
+            .bind(request_id)
+            .bind(user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    } else {
+        // Upsert vote
+        sqlx::query(
+            "INSERT INTO request_votes (request_id, user_id, value)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (request_id, user_id) DO UPDATE SET value = $3",
+        )
+        .bind(request_id)
+        .bind(user.id)
+        .bind(body.value)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+    }
+
+    let vote_total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(value::bigint), 0) FROM request_votes WHERE request_id = $1",
+    )
+    .bind(request_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+
+    Ok(Json(RequestVoteResult { vote_total }))
+}
+
+#[derive(sqlx::FromRow, Serialize)]
+pub struct RequestWithVoteTotal {
+    id: Uuid,
+    author_id: Uuid,
+    meaning: String,
+    status: RequestStatus,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    vote_total: i64,
 }
 
 pub async fn trending_requests(
     State(state): State<AppState>,
     Query(query): Query<ListRequestsQuery>,
-) -> Result<Json<PaginatedResponse<Request>>, AppError> {
+) -> Result<Json<PaginatedResponse<RequestWithVoteTotal>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
 
-    // Fetch all open requests and sort by vote_total in memory
-    // (trending sort is in-memory, so no cursor pagination)
-    let result = crate::dynamo::query_gsi::<Request>(
-        &state,
-        "GSI3",
-        "gsi3pk",
-        "RSTATUS#open",
-        false,
-        None,
-        None,
+    let requests: Vec<RequestWithVoteTotal> = sqlx::query_as(
+        "SELECT r.*, COALESCE(SUM(rv.value::bigint), 0) as vote_total
+         FROM requests r
+         LEFT JOIN request_votes rv ON rv.request_id = r.id
+         WHERE r.status = 'open'
+         GROUP BY r.id
+         ORDER BY vote_total DESC, r.created_at DESC
+         LIMIT $1",
     )
-    .await?;
-
-    let mut requests = result.items;
-    requests.sort_by(|a, b| {
-        b.vote_total
-            .cmp(&a.vote_total)
-            .then(b.created_at.cmp(&a.created_at))
-    });
-    requests.truncate(limit as usize);
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
     Ok(Json(PaginatedResponse {
         data: requests,

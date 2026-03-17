@@ -1,4 +1,3 @@
-use aws_sdk_dynamodb::types::AttributeValue;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -45,20 +44,22 @@ pub async fn update_score_weights(
         }
     }
 
-    state
-        .dynamo
-        .put_item()
-        .table_name(&state.table)
-        .item("pk", AttributeValue::S("CONFIG".to_string()))
-        .item("sk", AttributeValue::S("SCORE_WEIGHTS".to_string()))
-        .item("community", AttributeValue::N(body.community.to_string()))
-        .item("meaning", AttributeValue::N(body.meaning.to_string()))
-        .item("prosody", AttributeValue::N(body.prosody.to_string()))
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
+    let value = serde_json::to_value(&ScoreWeights {
+        community: body.community,
+        meaning: body.meaning,
+        prosody: body.prosody,
+    })
+    .map_err(|e| AppError::Internal(format!("Serialization error: {e}")))?;
 
-    // Refresh the in-memory cache
+    sqlx::query(
+        "INSERT INTO config (key, value) VALUES ('score_weights', $1)
+         ON CONFLICT (key) DO UPDATE SET value = $1",
+    )
+    .bind(&value)
+    .execute(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
+
     let weights = ScoreWeights::refresh(&state).await?;
     Ok((StatusCode::OK, Json(weights)))
 }

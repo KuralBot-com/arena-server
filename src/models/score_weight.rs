@@ -21,55 +21,31 @@ impl Default for ScoreWeights {
 }
 
 impl ScoreWeights {
-    /// Load weights from the in-memory cache (no DynamoDB call).
+    /// Load weights from the in-memory cache (no DB call).
     pub async fn load(state: &AppState) -> Result<Self, AppError> {
         Ok(state.score_weights.read().await.clone())
     }
 
-    /// Fetch weights from DynamoDB and update the in-memory cache.
+    /// Fetch weights from PostgreSQL and update the in-memory cache.
     pub async fn refresh(state: &AppState) -> Result<Self, AppError> {
-        let weights = Self::load_from_dynamo(state).await?;
+        let weights = Self::load_from_db(state).await?;
         *state.score_weights.write().await = weights.clone();
         Ok(weights)
     }
 
-    /// Read weights directly from DynamoDB (used for initial load and refresh).
-    pub async fn load_from_dynamo(state: &AppState) -> Result<Self, AppError> {
-        use aws_sdk_dynamodb::types::AttributeValue;
+    /// Read weights directly from PostgreSQL.
+    pub async fn load_from_db(state: &AppState) -> Result<Self, AppError> {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT value FROM config WHERE key = 'score_weights'")
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
-        let result = state
-            .dynamo
-            .get_item()
-            .table_name(&state.table)
-            .key("pk", AttributeValue::S("CONFIG".to_string()))
-            .key("sk", AttributeValue::S("SCORE_WEIGHTS".to_string()))
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("DynamoDB error: {e}")))?;
-
-        match result.item {
-            Some(item) => {
-                let community = item
-                    .get("community")
-                    .and_then(|v| v.as_n().ok())
-                    .and_then(|n| n.parse::<f32>().ok())
-                    .unwrap_or(0.34);
-                let meaning = item
-                    .get("meaning")
-                    .and_then(|v| v.as_n().ok())
-                    .and_then(|n| n.parse::<f32>().ok())
-                    .unwrap_or(0.33);
-                let prosody = item
-                    .get("prosody")
-                    .and_then(|v| v.as_n().ok())
-                    .and_then(|n| n.parse::<f32>().ok())
-                    .unwrap_or(0.33);
-
-                Ok(Self {
-                    community,
-                    meaning,
-                    prosody,
-                })
+        match row {
+            Some((value,)) => {
+                let weights: ScoreWeights = serde_json::from_value(value)
+                    .map_err(|e| AppError::Internal(format!("Config parse error: {e}")))?;
+                Ok(weights)
             }
             None => Ok(Self::default()),
         }

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "auth_provider", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum AuthProvider {
     Google,
@@ -21,7 +22,8 @@ impl fmt::Display for AuthProvider {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "user_role", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
     User,
@@ -29,7 +31,8 @@ pub enum UserRole {
     Admin,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "bot_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum BotType {
     Poet,
@@ -37,10 +40,19 @@ pub enum BotType {
     ProsodyJudge,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "request_status", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum RequestStatus {
     Open,
     Closed,
     Archived,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "score_type", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum ScoreType {
+    Meaning,
+    Prosody,
 }

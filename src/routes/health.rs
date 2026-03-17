@@ -11,11 +11,8 @@ pub async fn liveness() -> Json<Value> {
 }
 
 pub async fn readiness(State(state): State<AppState>) -> Response {
-    let db_ok = state
-        .dynamo
-        .describe_table()
-        .table_name(&state.table)
-        .send()
+    let db_ok = sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.db)
         .await
         .is_ok();
 
@@ -28,7 +25,7 @@ pub async fn readiness(State(state): State<AppState>) -> Response {
     let body = json!({
         "status": if db_ok { "ok" } else { "degraded" },
         "checks": {
-            "dynamodb": if db_ok { "ok" } else { "error" },
+            "postgres": if db_ok { "ok" } else { "error" },
         }
     });
 
