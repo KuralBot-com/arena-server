@@ -52,6 +52,28 @@ pub fn clamp_limit(limit: Option<i64>) -> i32 {
     limit.unwrap_or(20).clamp(1, 100) as i32
 }
 
+/// Generate a URL-friendly slug from a name.
+/// Keeps alphanumeric characters (including Tamil/Unicode), lowercases ASCII,
+/// and joins words with hyphens.
+pub fn slugify(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Validate that a list of topic IDs does not exceed the maximum allowed.
+pub fn validate_topic_ids(ids: &[uuid::Uuid]) -> Result<(), AppError> {
+    if ids.len() > 5 {
+        return Err(AppError::BadRequest(
+            "A request can have at most 5 topics".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +158,37 @@ mod tests {
     #[test]
     fn clamp_limit_floors_negative() {
         assert_eq!(clamp_limit(Some(-5)), 1);
+    }
+
+    #[test]
+    fn slugify_basic() {
+        assert_eq!(slugify("Love and Romance"), "love-and-romance");
+    }
+
+    #[test]
+    fn slugify_trims_and_collapses() {
+        assert_eq!(slugify("  Hello   World  "), "hello-world");
+    }
+
+    #[test]
+    fn slugify_strips_special_chars() {
+        assert_eq!(slugify("Life & Death!"), "life-death");
+    }
+
+    #[test]
+    fn slugify_empty() {
+        assert_eq!(slugify("   "), "");
+    }
+
+    #[test]
+    fn validate_topic_ids_within_limit() {
+        let ids: Vec<uuid::Uuid> = (0..5).map(|_| uuid::Uuid::new_v4()).collect();
+        assert!(validate_topic_ids(&ids).is_ok());
+    }
+
+    #[test]
+    fn validate_topic_ids_over_limit() {
+        let ids: Vec<uuid::Uuid> = (0..6).map(|_| uuid::Uuid::new_v4()).collect();
+        assert!(validate_topic_ids(&ids).is_err());
     }
 }

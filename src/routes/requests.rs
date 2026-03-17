@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::AuthUser;
-use crate::models::enums::{RequestStatus, UserRole};
+use crate::models::enums::RequestStatus;
 use crate::models::pagination::PaginatedResponse;
 use crate::models::request::Request;
 use crate::state::AppState;
@@ -16,11 +16,13 @@ use super::CacheJson;
 #[derive(Deserialize)]
 pub struct CreateRequest {
     pub meaning: String,
+    pub topic_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Deserialize)]
 pub struct ListRequestsQuery {
     pub status: Option<RequestStatus>,
+    pub topic: Option<String>,
     pub limit: Option<i64>,
     pub cursor: Option<String>,
 }
@@ -46,13 +48,21 @@ pub async fn create_request(
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<Request>), AppError> {
     let meaning = crate::validate::trimmed_non_empty("meaning", &body.meaning, 2000)?;
+    let topic_ids = body.topic_ids.as_deref().unwrap_or(&[]);
+    crate::validate::validate_topic_ids(topic_ids)?;
+
+    let mut tx = state.db.begin().await?;
 
     let request: Request =
         sqlx::query_as("INSERT INTO requests (author_id, meaning) VALUES ($1, $2) RETURNING *")
             .bind(user.id)
             .bind(&meaning)
-            .fetch_one(&state.db)
+            .fetch_one(&mut *tx)
             .await?;
+
+    super::topics::insert_request_topics(&mut tx, request.id, topic_ids).await?;
+
+    tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(request)))
 }
@@ -64,27 +74,51 @@ pub async fn list_requests(
     let limit = crate::validate::clamp_limit(query.limit);
     let status = query.status.unwrap_or(RequestStatus::Open);
 
-    let requests: Vec<Request> = if let Some(cursor) = &query.cursor {
-        let c = crate::db::decode_cursor(cursor)?;
-        sqlx::query_as(
-            "SELECT * FROM requests WHERE status = $1 AND (created_at, id) < ($2, $3)
-             ORDER BY created_at DESC, id DESC LIMIT $4",
-        )
-        .bind(status)
-        .bind(c.created_at)
-        .bind(c.id)
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await?
-    } else {
-        sqlx::query_as(
-            "SELECT * FROM requests WHERE status = $1 ORDER BY created_at DESC, id DESC LIMIT $2",
-        )
-        .bind(status)
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await?
-    };
+    // Build dynamic query with optional cursor and topic filter
+    let mut conditions = vec!["r.status = $1".to_string()];
+    let mut param_idx = 2u32;
+    let mut extra_joins = String::new();
+
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(crate::db::decode_cursor)
+        .transpose()?;
+
+    if cursor.is_some() {
+        conditions.push(format!(
+            "(r.created_at, r.id) < (${}, ${})",
+            param_idx,
+            param_idx + 1
+        ));
+        param_idx += 2;
+    }
+    if query.topic.is_some() {
+        extra_joins =
+            "JOIN request_topics rt ON rt.request_id = r.id JOIN topics t ON t.id = rt.topic_id"
+                .to_string();
+        conditions.push(format!("t.slug = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    let where_clause = format!("WHERE {}", conditions.join(" AND "));
+    let sql = format!(
+        "SELECT r.* FROM requests r {extra_joins}
+         {where_clause}
+         ORDER BY r.created_at DESC, r.id DESC
+         LIMIT ${param_idx}"
+    );
+
+    let mut q = sqlx::query_as::<_, Request>(&sql).bind(status);
+    if let Some(ref c) = cursor {
+        q = q.bind(c.created_at).bind(c.id);
+    }
+    if let Some(ref topic) = query.topic {
+        q = q.bind(topic);
+    }
+    q = q.bind(limit);
+
+    let requests: Vec<Request> = q.fetch_all(&state.db).await?;
 
     let next_cursor = if requests.len() == limit as usize {
         requests
@@ -127,9 +161,7 @@ pub async fn update_request_status(
     Path(request_id): Path<Uuid>,
     Json(body): Json<UpdateRequestStatus>,
 ) -> Result<Json<Request>, AppError> {
-    if user.role != UserRole::Admin && user.role != UserRole::Moderator {
-        return Err(AppError::Forbidden);
-    }
+    super::topics::require_moderator(&user)?;
 
     let request: Request =
         sqlx::query_as("UPDATE requests SET status = $2 WHERE id = $1 RETURNING *")

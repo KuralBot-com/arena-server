@@ -34,6 +34,7 @@ pub struct KuralFeedQuery {
     pub period: Option<String>,
     pub request_id: Option<Uuid>,
     pub bot_id: Option<Uuid>,
+    pub topic: Option<String>,
     pub limit: Option<i64>,
 }
 
@@ -70,6 +71,7 @@ pub struct UserContributionStats {
 pub struct RequestCompletionQuery {
     pub sort: Option<String>,
     pub status: Option<RequestStatus>,
+    pub topic: Option<String>,
     pub limit: Option<i64>,
 }
 
@@ -129,6 +131,18 @@ pub async fn request_completion(
         _ => "kural_count DESC, r.created_at DESC",
     };
 
+    let mut conditions = vec!["r.status = $1".to_string()];
+    let mut param_idx = 2u32;
+    let mut extra_joins = String::new();
+
+    if query.topic.is_some() {
+        extra_joins = "JOIN request_topics rtp ON rtp.request_id = r.id JOIN topics tp ON tp.id = rtp.topic_id".to_string();
+        conditions.push(format!("tp.slug = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    let where_clause = format!("WHERE {}", conditions.join(" AND "));
+
     let sql = format!(
         "SELECT
             r.id, u.display_name as author_display_name, r.meaning, r.status, r.created_at,
@@ -138,17 +152,21 @@ pub async fn request_completion(
          JOIN users u ON u.id = r.author_id
          LEFT JOIN request_votes rv ON rv.request_id = r.id
          LEFT JOIN kurals k ON k.request_id = r.id
-         WHERE r.status = $1
+         {extra_joins}
+         {where_clause}
          GROUP BY r.id, u.display_name, r.meaning, r.status, r.created_at
          ORDER BY {order_clause}
-         LIMIT $2"
+         LIMIT ${param_idx}"
     );
 
-    let entries: Vec<RequestCompletionEntry> = sqlx::query_as(&sql)
-        .bind(status)
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await?;
+    let mut q = sqlx::query_as::<_, RequestCompletionEntry>(&sql).bind(status);
+
+    if let Some(ref topic) = query.topic {
+        q = q.bind(topic);
+    }
+    q = q.bind(limit);
+
+    let entries: Vec<RequestCompletionEntry> = q.fetch_all(&state.db).await?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=60")],
@@ -184,6 +202,7 @@ pub async fn top_kurals(
     // Build WHERE conditions
     let mut conditions = Vec::new();
     let mut param_idx = 1u32;
+    let mut extra_joins = String::new();
 
     if cutoff.is_some() {
         conditions.push(format!("k.created_at >= ${param_idx}"));
@@ -194,6 +213,11 @@ pub async fn top_kurals(
         param_idx += 1;
     } else if query.bot_id.is_some() {
         conditions.push(format!("k.bot_id = ${param_idx}"));
+        param_idx += 1;
+    }
+    if query.topic.is_some() {
+        extra_joins = "JOIN request_topics rtp ON rtp.request_id = k.request_id JOIN topics tp ON tp.id = rtp.topic_id".to_string();
+        conditions.push(format!("tp.slug = ${param_idx}"));
         param_idx += 1;
     }
 
@@ -215,6 +239,7 @@ pub async fn top_kurals(
          FROM kural_scores k
          JOIN bots b ON b.id = k.bot_id
          JOIN requests r ON r.id = k.request_id
+         {extra_joins}
          {where_clause}
          ORDER BY {order_clause}
          LIMIT ${param_idx}"
@@ -230,6 +255,9 @@ pub async fn top_kurals(
         q = q.bind(request_id);
     } else if let Some(bot_id) = query.bot_id {
         q = q.bind(bot_id);
+    }
+    if let Some(ref topic) = query.topic {
+        q = q.bind(topic);
     }
     q = q.bind(limit);
 

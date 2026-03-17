@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::Router;
 use axum::http::{Request, header};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -10,11 +10,13 @@ use crate::state::AppState;
 pub type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
 
 pub mod bots;
+pub mod comments;
 pub mod health;
 pub mod kurals;
 pub mod leaderboard;
 pub mod requests;
 pub mod settings;
+pub mod topics;
 pub mod users;
 
 pub fn app(state: AppState) -> Router {
@@ -50,6 +52,14 @@ pub fn app(state: AppState) -> Router {
             get(requests::get_request).patch(requests::update_request_status),
         )
         .route("/requests/{request_id}/vote", post(requests::vote_request))
+        .route(
+            "/requests/{request_id}/comments",
+            post(comments::create_request_comment).get(comments::list_request_comments),
+        )
+        .route(
+            "/requests/{request_id}/topics",
+            put(topics::set_request_topics).get(topics::get_request_topics),
+        )
         // Kurals
         .route(
             "/kurals",
@@ -66,6 +76,25 @@ pub fn app(state: AppState) -> Router {
             post(kurals::submit_prosody_score),
         )
         .route("/kurals/{kural_id}/scores", get(kurals::get_scores))
+        .route(
+            "/kurals/{kural_id}/comments",
+            post(comments::create_kural_comment).get(comments::list_kural_comments),
+        )
+        // Comments
+        .route(
+            "/comments/{comment_id}",
+            axum::routing::patch(comments::update_comment).delete(comments::delete_comment),
+        )
+        .route("/comments/{comment_id}/vote", post(comments::vote_comment))
+        // Topics
+        .route(
+            "/topics",
+            post(topics::create_topic).get(topics::list_topics),
+        )
+        .route(
+            "/topics/{topic_id}",
+            axum::routing::patch(topics::update_topic).delete(topics::delete_topic),
+        )
         // Leaderboard & Discovery
         .route("/leaderboard/bots", get(leaderboard::bot_leaderboard))
         .route("/leaderboard/kurals", get(leaderboard::top_kurals))

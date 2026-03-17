@@ -691,3 +691,232 @@ Update scoring weights.
 Each weight must be between 0.0 and 1.0.
 
 **Response** `200`: Updated ScoreWeights object. **Errors**: `403`.
+
+---
+
+## Topics
+
+### `POST /topics`
+
+Create a new topic.
+
+**Auth**: User (Admin/Moderator only)
+
+**Request**:
+
+```json
+{
+  "name": "Love",
+  "description": "Kurals about love and romance"
+}
+```
+
+`description` is optional. Slug is auto-generated from name.
+
+**Response** `201`: Topic object.
+
+```json
+{
+  "id": "uuid",
+  "name": "Love",
+  "slug": "love",
+  "description": "Kurals about love and romance",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}
+```
+
+**Errors**: `403`, `409` (duplicate slug).
+
+### `GET /topics`
+
+List all topics.
+
+**Auth**: Public
+
+**Response** `200`: Array of Topic objects, ordered by name.
+
+### `PATCH /topics/{topic_id}`
+
+Update a topic's name or description.
+
+**Auth**: User (Admin/Moderator only)
+
+**Request**:
+
+```json
+{
+  "name": "Updated Name",
+  "description": "Updated description"
+}
+```
+
+Both fields are optional.
+
+**Response** `200`: Updated Topic object. **Errors**: `403`, `404`, `409`.
+
+### `DELETE /topics/{topic_id}`
+
+Delete a topic. Removes it from all associated requests.
+
+**Auth**: User (Admin/Moderator only)
+
+**Response** `204`. **Errors**: `403`, `404`.
+
+### `PUT /requests/{request_id}/topics`
+
+Set topics on a request (replaces all existing). Maximum 5 topics.
+
+**Auth**: User (request author only)
+
+**Request**:
+
+```json
+{
+  "topic_ids": ["uuid1", "uuid2"]
+}
+```
+
+Empty array clears all topics.
+
+**Response** `200`: Array of Topic objects.
+
+**Errors**: `400` (invalid topic ID, >5 topics), `403`, `404`.
+
+### `GET /requests/{request_id}/topics`
+
+Get topics for a request.
+
+**Auth**: Public
+
+**Response** `200`: Array of Topic objects.
+
+### Topic Filtering
+
+The following endpoints accept an optional `topic` query parameter (topic slug):
+
+- `GET /requests?topic=love` — filter requests by topic
+- `GET /leaderboard/kurals?topic=love` — filter top kurals by topic
+- `GET /leaderboard/requests?topic=love` — filter request completion by topic
+
+---
+
+## Comments
+
+Threaded comments on requests and kurals. Max nesting depth of 3 levels (depth 0, 1, 2).
+
+### `POST /requests/{request_id}/comments`
+
+Create a comment on a request.
+
+**Auth**: User
+
+**Request**:
+
+```json
+{
+  "body": "Great request!",
+  "parent_id": null
+}
+```
+
+Set `parent_id` to reply to an existing comment. Parent must belong to the same request and resulting depth must be <= 2.
+
+**Response** `201`: Comment object.
+
+```json
+{
+  "id": "uuid",
+  "author_id": "uuid",
+  "request_id": "uuid",
+  "kural_id": null,
+  "parent_id": null,
+  "depth": 0,
+  "body": "Great request!",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}
+```
+
+**Errors**: `400` (max depth exceeded, parent mismatch), `404`.
+
+### `GET /requests/{request_id}/comments`
+
+List comments on a request. Returns a flat list ordered by `created_at ASC`; client reconstructs the tree using `parent_id`.
+
+**Query params**: `limit` (1-100, default 20), `cursor`
+
+**Auth**: Public
+
+**Response** `200`: Paginated list of:
+
+```json
+{
+  "id": "uuid",
+  "author_id": "uuid",
+  "author_display_name": "string",
+  "author_avatar_url": "string | null",
+  "parent_id": "uuid | null",
+  "depth": 0,
+  "body": "Great request!",
+  "vote_total": 5,
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}
+```
+
+### `POST /kurals/{kural_id}/comments`
+
+Create a comment on a kural. Same request/response format as request comments.
+
+### `GET /kurals/{kural_id}/comments`
+
+List comments on a kural. Same format as request comments listing.
+
+### `PATCH /comments/{comment_id}`
+
+Edit a comment. Only the author can edit.
+
+**Auth**: User (author only)
+
+**Request**:
+
+```json
+{
+  "body": "Updated comment text"
+}
+```
+
+**Response** `200`: Updated Comment object. **Errors**: `403`, `404`.
+
+### `POST /comments/{comment_id}/vote`
+
+Upvote or downvote a comment at any nesting level.
+
+**Auth**: User
+
+**Request**:
+
+```json
+{
+  "value": 1
+}
+```
+
+`value`: `1` (upvote), `-1` (downvote), `0` (remove vote).
+
+**Response** `200`:
+
+```json
+{
+  "vote_total": 5
+}
+```
+
+### `DELETE /comments/{comment_id}`
+
+Delete a comment and all its replies (cascade).
+
+**Auth**: User (author, or Admin/Moderator)
+
+**Response** `204`. **Errors**: `403`, `404`.
