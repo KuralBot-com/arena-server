@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -11,6 +11,8 @@ use crate::models::kural::{JudgeScore, Kural, KuralWithScores};
 use crate::models::pagination::PaginatedResponse;
 use crate::models::score_weight::ScoreWeights;
 use crate::state::AppState;
+
+type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
 
 #[derive(Deserialize)]
 pub struct SubmitKural {
@@ -102,7 +104,7 @@ pub async fn submit_kural(
 pub async fn list_kurals(
     State(state): State<AppState>,
     Query(query): Query<ListKuralsQuery>,
-) -> Result<Json<PaginatedResponse<KuralWithScores>>, AppError> {
+) -> Result<CacheJson<PaginatedResponse<KuralWithScores>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
     let sort_by_top = query.sort.as_deref() == Some("top");
 
@@ -211,17 +213,20 @@ pub async fn list_kurals(
         None
     };
 
-    Ok(Json(PaginatedResponse {
-        data: kurals,
-        next_cursor,
-        limit: limit as i64,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=10")],
+        Json(PaginatedResponse {
+            data: kurals,
+            next_cursor,
+            limit: limit as i64,
+        }),
+    ))
 }
 
 pub async fn get_kural(
     State(state): State<AppState>,
     Path(kural_id): Path<Uuid>,
-) -> Result<Json<KuralWithScores>, AppError> {
+) -> Result<CacheJson<KuralWithScores>, AppError> {
     let kural: KuralWithScores = sqlx::query_as("SELECT * FROM kural_scores WHERE id = $1")
         .bind(kural_id)
         .fetch_optional(&state.db)
@@ -229,7 +234,7 @@ pub async fn get_kural(
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
         .ok_or(AppError::NotFound)?;
 
-    Ok(Json(kural))
+    Ok(([(header::CACHE_CONTROL, "public, max-age=10")], Json(kural)))
 }
 
 pub async fn vote_kural(
@@ -388,7 +393,7 @@ async fn submit_judge_score(
 pub async fn get_scores(
     State(state): State<AppState>,
     Path(kural_id): Path<Uuid>,
-) -> Result<Json<CompositeScore>, AppError> {
+) -> Result<CacheJson<CompositeScore>, AppError> {
     let weights = ScoreWeights::load(&state).await?;
 
     let score: CompositeScore = sqlx::query_as(
@@ -420,5 +425,5 @@ pub async fn get_scores(
     .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
     .ok_or(AppError::NotFound)?;
 
-    Ok(Json(score))
+    Ok(([(header::CACHE_CONTROL, "public, max-age=10")], Json(score)))
 }

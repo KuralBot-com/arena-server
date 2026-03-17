@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -73,7 +73,7 @@ pub async fn list_bots(
 pub async fn get_bot_public(
     State(state): State<AppState>,
     Path(bot_id): Path<Uuid>,
-) -> Result<Json<Bot>, AppError> {
+) -> Result<([(header::HeaderName, &'static str); 1], Json<Bot>), AppError> {
     let bot: Bot = sqlx::query_as("SELECT * FROM bots WHERE id = $1")
         .bind(bot_id)
         .fetch_optional(&state.db)
@@ -81,7 +81,7 @@ pub async fn get_bot_public(
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
         .ok_or(AppError::NotFound)?;
 
-    Ok(Json(bot))
+    Ok(([(header::CACHE_CONTROL, "public, max-age=60")], Json(bot)))
 }
 
 #[derive(Deserialize)]

@@ -1,5 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
+use axum::http::header;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -7,6 +8,8 @@ use crate::error::AppError;
 use crate::models::enums::RequestStatus;
 use crate::models::pagination::PaginatedResponse;
 use crate::state::AppState;
+
+type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
 
 #[derive(Deserialize)]
 pub struct BotLeaderboardQuery {
@@ -84,7 +87,7 @@ pub struct RequestCompletionEntry {
 pub async fn user_stats(
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<UserContributionStats>, AppError> {
+) -> Result<CacheJson<UserContributionStats>, AppError> {
     let stats: UserContributionStats = sqlx::query_as(
         "SELECT
             u.id as user_id,
@@ -108,13 +111,16 @@ pub async fn user_stats(
     .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
     .ok_or(AppError::NotFound)?;
 
-    Ok(Json(stats))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        Json(stats),
+    ))
 }
 
 pub async fn request_completion(
     State(state): State<AppState>,
     Query(query): Query<RequestCompletionQuery>,
-) -> Result<Json<PaginatedResponse<RequestCompletionEntry>>, AppError> {
+) -> Result<CacheJson<PaginatedResponse<RequestCompletionEntry>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
     let status = query.status.unwrap_or(RequestStatus::Open);
 
@@ -146,17 +152,20 @@ pub async fn request_completion(
         .await
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
-    Ok(Json(PaginatedResponse {
-        data: entries,
-        next_cursor: None,
-        limit,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=60")],
+        Json(PaginatedResponse {
+            data: entries,
+            next_cursor: None,
+            limit,
+        }),
+    ))
 }
 
 pub async fn top_kurals(
     State(state): State<AppState>,
     Query(query): Query<KuralFeedQuery>,
-) -> Result<Json<PaginatedResponse<KuralFeedEntry>>, AppError> {
+) -> Result<CacheJson<PaginatedResponse<KuralFeedEntry>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
 
     let cutoff = match query.period.as_deref() {
@@ -231,17 +240,20 @@ pub async fn top_kurals(
         .await
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
-    Ok(Json(PaginatedResponse {
-        data: entries,
-        next_cursor: None,
-        limit,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=30")],
+        Json(PaginatedResponse {
+            data: entries,
+            next_cursor: None,
+            limit,
+        }),
+    ))
 }
 
 pub async fn bot_leaderboard(
     State(state): State<AppState>,
     Query(query): Query<BotLeaderboardQuery>,
-) -> Result<Json<PaginatedResponse<BotLeaderboardEntry>>, AppError> {
+) -> Result<CacheJson<PaginatedResponse<BotLeaderboardEntry>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
 
     let order_clause = match query.sort.as_deref() {
@@ -268,9 +280,12 @@ pub async fn bot_leaderboard(
         .await
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
-    Ok(Json(PaginatedResponse {
-        data: entries,
-        next_cursor: None,
-        limit,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=60")],
+        Json(PaginatedResponse {
+            data: entries,
+            next_cursor: None,
+            limit,
+        }),
+    ))
 }

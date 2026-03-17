@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use serde::Deserialize;
 
 use crate::error::AppError;
@@ -11,9 +11,12 @@ use crate::state::AppState;
 
 pub async fn get_score_weights(
     State(state): State<AppState>,
-) -> Result<Json<ScoreWeights>, AppError> {
+) -> Result<([(header::HeaderName, &'static str); 1], Json<ScoreWeights>), AppError> {
     let weights = ScoreWeights::load(&state).await?;
-    Ok(Json(weights))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        Json(weights),
+    ))
 }
 
 #[derive(Deserialize)]

@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -61,7 +61,13 @@ pub async fn update_me(
 pub async fn get_user_profile(
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<PublicUserProfile>, AppError> {
+) -> Result<
+    (
+        [(header::HeaderName, &'static str); 1],
+        Json<PublicUserProfile>,
+    ),
+    AppError,
+> {
     let user: User = sqlx::query_as("SELECT * FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_optional(&state.db)
@@ -69,13 +75,16 @@ pub async fn get_user_profile(
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
         .ok_or(AppError::NotFound)?;
 
-    Ok(Json(PublicUserProfile {
-        id: user.id,
-        display_name: user.display_name,
-        avatar_url: user.avatar_url,
-        role: user.role,
-        created_at: user.created_at,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=60")],
+        Json(PublicUserProfile {
+            id: user.id,
+            display_name: user.display_name,
+            avatar_url: user.avatar_url,
+            role: user.role,
+            created_at: user.created_at,
+        }),
+    ))
 }
 
 pub async fn delete_me(

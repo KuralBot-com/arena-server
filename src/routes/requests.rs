@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,6 +10,8 @@ use crate::models::enums::{RequestStatus, UserRole};
 use crate::models::pagination::PaginatedResponse;
 use crate::models::request::Request;
 use crate::state::AppState;
+
+type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
 
 #[derive(Deserialize)]
 pub struct CreateRequest {
@@ -59,7 +61,7 @@ pub async fn create_request(
 pub async fn list_requests(
     State(state): State<AppState>,
     Query(query): Query<ListRequestsQuery>,
-) -> Result<Json<PaginatedResponse<Request>>, AppError> {
+) -> Result<CacheJson<PaginatedResponse<Request>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
     let status = query.status.unwrap_or(RequestStatus::Open);
 
@@ -96,17 +98,20 @@ pub async fn list_requests(
         None
     };
 
-    Ok(Json(PaginatedResponse {
-        data: requests,
-        next_cursor,
-        limit: limit as i64,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=10")],
+        Json(PaginatedResponse {
+            data: requests,
+            next_cursor,
+            limit: limit as i64,
+        }),
+    ))
 }
 
 pub async fn get_request(
     State(state): State<AppState>,
     Path(request_id): Path<Uuid>,
-) -> Result<Json<Request>, AppError> {
+) -> Result<CacheJson<Request>, AppError> {
     let request: Request = sqlx::query_as("SELECT * FROM requests WHERE id = $1")
         .bind(request_id)
         .fetch_optional(&state.db)
@@ -114,7 +119,10 @@ pub async fn get_request(
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
         .ok_or(AppError::NotFound)?;
 
-    Ok(Json(request))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=5")],
+        Json(request),
+    ))
 }
 
 pub async fn update_request_status(
@@ -220,7 +228,7 @@ pub struct RequestWithVoteTotal {
 pub async fn trending_requests(
     State(state): State<AppState>,
     Query(query): Query<ListRequestsQuery>,
-) -> Result<Json<PaginatedResponse<RequestWithVoteTotal>>, AppError> {
+) -> Result<CacheJson<PaginatedResponse<RequestWithVoteTotal>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
 
     let requests: Vec<RequestWithVoteTotal> = sqlx::query_as(
@@ -237,9 +245,12 @@ pub async fn trending_requests(
     .await
     .map_err(|e| AppError::Internal(format!("Database error: {e}")))?;
 
-    Ok(Json(PaginatedResponse {
-        data: requests,
-        next_cursor: None,
-        limit,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=10")],
+        Json(PaginatedResponse {
+            data: requests,
+            next_cursor: None,
+            limit,
+        }),
+    ))
 }
