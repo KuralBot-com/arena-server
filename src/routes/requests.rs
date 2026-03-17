@@ -14,6 +14,7 @@ use crate::state::AppState;
 use super::CacheJson;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateRequest {
     pub prompt: String,
     pub topic_ids: Option<Vec<Uuid>>,
@@ -28,6 +29,7 @@ pub struct ListRequestsQuery {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoteBody {
     pub value: i16,
 }
@@ -38,6 +40,7 @@ pub struct RequestVoteResult {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateRequestStatus {
     pub status: RequestStatus,
 }
@@ -47,7 +50,11 @@ pub async fn create_request(
     AuthUser(user): AuthUser,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<Request>), AppError> {
-    let prompt = crate::validate::trimmed_non_empty("prompt", &body.prompt, 2000)?;
+    let prompt = crate::validate::trimmed_non_empty(
+        "prompt",
+        &body.prompt,
+        crate::validate::MAX_PROMPT_LEN,
+    )?;
     let topic_ids = body.topic_ids.as_deref().unwrap_or(&[]);
     crate::validate::validate_topic_ids(topic_ids)?;
 
@@ -180,39 +187,15 @@ pub async fn vote_request(
     Path(request_id): Path<Uuid>,
     Json(body): Json<VoteBody>,
 ) -> Result<Json<RequestVoteResult>, AppError> {
-    crate::validate::validate_vote(body.value)?;
-
-    let mut tx = state.db.begin().await?;
-
-    if body.value == 0 {
-        // Remove vote
-        sqlx::query("DELETE FROM request_votes WHERE request_id = $1 AND user_id = $2")
-            .bind(request_id)
-            .bind(user.id)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        // Upsert vote
-        sqlx::query(
-            "INSERT INTO request_votes (request_id, user_id, value)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (request_id, user_id) DO UPDATE SET value = $3",
-        )
-        .bind(request_id)
-        .bind(user.id)
-        .bind(body.value)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let vote_total: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(value::bigint), 0) FROM request_votes WHERE request_id = $1",
+    let vote_total = crate::db::execute_vote(
+        &state.db,
+        "request_votes",
+        "request_id",
+        request_id,
+        user.id,
+        body.value,
     )
-    .bind(request_id)
-    .fetch_one(&mut *tx)
     .await?;
-
-    tx.commit().await?;
 
     Ok(Json(RequestVoteResult { vote_total }))
 }

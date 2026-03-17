@@ -49,18 +49,21 @@ async fn fetch_request_topics(db: &sqlx::PgPool, request_id: Uuid) -> Result<Vec
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateTopic {
     pub name: String,
     pub description: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateTopic {
     pub name: Option<String>,
     pub description: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SetRequestTopics {
     pub topic_ids: Vec<Uuid>,
 }
@@ -79,8 +82,16 @@ pub async fn create_topic(
 ) -> Result<(StatusCode, Json<Topic>), AppError> {
     require_moderator(&user)?;
 
-    let name = crate::validate::trimmed_non_empty("name", &body.name, 50)?;
-    let description = crate::validate::optional_trimmed("description", &body.description, 500)?;
+    let name = crate::validate::trimmed_non_empty(
+        "name",
+        &body.name,
+        crate::validate::MAX_SHORT_NAME_LEN,
+    )?;
+    let description = crate::validate::optional_trimmed(
+        "description",
+        &body.description,
+        crate::validate::MAX_DESCRIPTION_LEN,
+    )?;
     let slug = crate::validate::slugify(&name);
 
     if slug.is_empty() {
@@ -133,11 +144,17 @@ pub async fn update_topic(
         .ok_or(AppError::NotFound)?;
 
     let name = match &body.name {
-        Some(n) => crate::validate::trimmed_non_empty("name", n, 50)?,
+        Some(n) => {
+            crate::validate::trimmed_non_empty("name", n, crate::validate::MAX_SHORT_NAME_LEN)?
+        }
         None => existing.name,
     };
     let description = match &body.description {
-        Some(_) => crate::validate::optional_trimmed("description", &body.description, 500)?,
+        Some(_) => crate::validate::optional_trimmed(
+            "description",
+            &body.description,
+            crate::validate::MAX_DESCRIPTION_LEN,
+        )?,
         None => existing.description,
     };
     let slug = crate::validate::slugify(&name);

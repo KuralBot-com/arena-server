@@ -1,5 +1,17 @@
 use crate::error::AppError;
 
+// Maximum length constants for input validation.
+pub const MAX_PROMPT_LEN: usize = 2000;
+pub const MAX_CONTENT_LEN: usize = 5000;
+pub const MAX_DESCRIPTION_LEN: usize = 500;
+pub const MAX_COMMENT_LEN: usize = 2000;
+pub const MAX_REASONING_LEN: usize = 2000;
+pub const MAX_NAME_LEN: usize = 100;
+pub const MAX_SHORT_NAME_LEN: usize = 50;
+pub const MAX_AVATAR_URL_LEN: usize = 2048;
+pub const MAX_DISPLAY_NAME_LEN: usize = 100;
+pub const MAX_TOPICS_PER_REQUEST: usize = 5;
+
 /// Trim whitespace, reject empty strings, and enforce a maximum length.
 pub fn trimmed_non_empty(field: &str, value: &str, max_len: usize) -> Result<String, AppError> {
     let trimmed = value.trim().to_string();
@@ -66,10 +78,10 @@ pub fn slugify(name: &str) -> String {
 
 /// Validate that a list of topic IDs does not exceed the maximum allowed.
 pub fn validate_topic_ids(ids: &[uuid::Uuid]) -> Result<(), AppError> {
-    if ids.len() > 5 {
-        return Err(AppError::BadRequest(
-            "A request can have at most 5 topics".to_string(),
-        ));
+    if ids.len() > MAX_TOPICS_PER_REQUEST {
+        return Err(AppError::BadRequest(format!(
+            "A request can have at most {MAX_TOPICS_PER_REQUEST} topics"
+        )));
     }
     Ok(())
 }

@@ -32,6 +32,7 @@ pub enum AppError {
 
 impl From<sqlx::Error> for AppError {
     fn from(e: sqlx::Error) -> Self {
+        tracing::error!("Database error: {e}");
         AppError::Internal(format!("Database error: {e}"))
     }
 }

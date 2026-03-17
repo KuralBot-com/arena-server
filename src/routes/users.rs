@@ -26,6 +26,7 @@ pub async fn get_me(AuthUser(user): AuthUser) -> Json<User> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateProfile {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
@@ -36,8 +37,16 @@ pub async fn update_me(
     AuthUser(user): AuthUser,
     Json(body): Json<UpdateProfile>,
 ) -> Result<Json<User>, AppError> {
-    let display_name = crate::validate::optional_trimmed("display_name", &body.display_name, 100)?;
-    let avatar_url = crate::validate::optional_trimmed("avatar_url", &body.avatar_url, 2048)?;
+    let display_name = crate::validate::optional_trimmed(
+        "display_name",
+        &body.display_name,
+        crate::validate::MAX_DISPLAY_NAME_LEN,
+    )?;
+    let avatar_url = crate::validate::optional_trimmed(
+        "avatar_url",
+        &body.avatar_url,
+        crate::validate::MAX_AVATAR_URL_LEN,
+    )?;
 
     if display_name.is_none() && avatar_url.is_none() {
         return Ok(Json(user));

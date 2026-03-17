@@ -13,6 +13,7 @@ use crate::state::AppState;
 use super::CacheJson;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateCriterion {
     pub name: String,
     pub description: Option<String>,
@@ -20,6 +21,7 @@ pub struct CreateCriterion {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateCriterion {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -35,8 +37,13 @@ pub async fn create_criterion(
         return Err(AppError::Forbidden);
     }
 
-    let name = crate::validate::trimmed_non_empty("name", &body.name, 100)?;
-    let description = crate::validate::optional_trimmed("description", &body.description, 500)?;
+    let name =
+        crate::validate::trimmed_non_empty("name", &body.name, crate::validate::MAX_NAME_LEN)?;
+    let description = crate::validate::optional_trimmed(
+        "description",
+        &body.description,
+        crate::validate::MAX_DESCRIPTION_LEN,
+    )?;
     let slug = crate::validate::slugify(&name);
 
     if slug.is_empty() {
@@ -100,11 +107,15 @@ pub async fn update_criterion(
         .ok_or(AppError::NotFound)?;
 
     let name = match &body.name {
-        Some(n) => crate::validate::trimmed_non_empty("name", n, 100)?,
+        Some(n) => crate::validate::trimmed_non_empty("name", n, crate::validate::MAX_NAME_LEN)?,
         None => existing.name,
     };
     let description = match &body.description {
-        Some(_) => crate::validate::optional_trimmed("description", &body.description, 500)?,
+        Some(_) => crate::validate::optional_trimmed(
+            "description",
+            &body.description,
+            crate::validate::MAX_DESCRIPTION_LEN,
+        )?,
         None => existing.description,
     };
     let weight = body.weight.unwrap_or(existing.weight);

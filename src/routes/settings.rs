@@ -22,6 +22,7 @@ pub async fn get_vote_weight(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateVoteWeight {
     pub vote: f32,
 }

@@ -14,12 +14,14 @@ use crate::state::AppState;
 use super::CacheJson;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateComment {
     pub body: String,
     pub parent_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateComment {
     pub body: String,
 }
@@ -31,6 +33,7 @@ pub struct ListCommentsQuery {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoteBody {
     pub value: i16,
 }
@@ -63,7 +66,8 @@ async fn create_comment_inner(
     response_id: Option<Uuid>,
     body: &CreateComment,
 ) -> Result<Comment, AppError> {
-    let text = crate::validate::trimmed_non_empty("body", &body.body, 2000)?;
+    let text =
+        crate::validate::trimmed_non_empty("body", &body.body, crate::validate::MAX_COMMENT_LEN)?;
 
     let (depth, parent_id) = if let Some(pid) = body.parent_id {
         // Verify parent exists and targets the same entity
@@ -233,7 +237,8 @@ pub async fn update_comment(
     Path(comment_id): Path<Uuid>,
     Json(body): Json<UpdateComment>,
 ) -> Result<Json<Comment>, AppError> {
-    let text = crate::validate::trimmed_non_empty("body", &body.body, 2000)?;
+    let text =
+        crate::validate::trimmed_non_empty("body", &body.body, crate::validate::MAX_COMMENT_LEN)?;
 
     let author_id: Uuid = sqlx::query_scalar("SELECT author_id FROM comments WHERE id = $1")
         .bind(comment_id)
@@ -284,37 +289,15 @@ pub async fn vote_comment(
     Path(comment_id): Path<Uuid>,
     Json(body): Json<VoteBody>,
 ) -> Result<Json<CommentVoteResult>, AppError> {
-    crate::validate::validate_vote(body.value)?;
-
-    let mut tx = state.db.begin().await?;
-
-    if body.value == 0 {
-        sqlx::query("DELETE FROM comment_votes WHERE comment_id = $1 AND user_id = $2")
-            .bind(comment_id)
-            .bind(user.id)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        sqlx::query(
-            "INSERT INTO comment_votes (comment_id, user_id, value)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (comment_id, user_id) DO UPDATE SET value = $3",
-        )
-        .bind(comment_id)
-        .bind(user.id)
-        .bind(body.value)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let vote_total: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(value::bigint), 0) FROM comment_votes WHERE comment_id = $1",
+    let vote_total = crate::db::execute_vote(
+        &state.db,
+        "comment_votes",
+        "comment_id",
+        comment_id,
+        user.id,
+        body.value,
     )
-    .bind(comment_id)
-    .fetch_one(&mut *tx)
     .await?;
-
-    tx.commit().await?;
 
     Ok(Json(CommentVoteResult { vote_total }))
 }

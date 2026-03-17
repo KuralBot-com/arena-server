@@ -15,6 +15,7 @@ use crate::state::AppState;
 use super::CacheJson;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubmitResponse {
     pub request_id: Uuid,
     pub content: String,
@@ -30,6 +31,7 @@ pub struct ListResponsesQuery {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoteResponseBody {
     pub value: i16,
 }
@@ -42,6 +44,7 @@ pub struct VoteResult {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubmitEvaluation {
     pub criterion_id: Uuid,
     pub score: f64,
@@ -75,7 +78,11 @@ pub async fn submit_response(
         return Err(AppError::Forbidden);
     }
 
-    let content = crate::validate::trimmed_non_empty("content", &body.content, 5000)?;
+    let content = crate::validate::trimmed_non_empty(
+        "content",
+        &body.content,
+        crate::validate::MAX_CONTENT_LEN,
+    )?;
 
     // Verify request exists and is open
     let status: Option<crate::models::enums::RequestStatus> =
@@ -112,98 +119,58 @@ pub async fn list_responses(
     let limit = crate::validate::clamp_limit(query.limit);
     let sort_by_top = query.sort.as_deref() == Some("top");
 
-    let responses: Vec<ResponseWithScores> = if let Some(request_id) = query.request_id {
-        if sort_by_top {
-            if let Some(cursor) = &query.cursor {
-                let c = crate::db::decode_cursor(cursor)?;
-                sqlx::query_as(
-                    "SELECT * FROM response_scores WHERE request_id = $1 AND (created_at, id) < ($2, $3)
-                     ORDER BY vote_score DESC NULLS LAST, created_at DESC LIMIT $4",
-                )
-                .bind(request_id)
-                .bind(c.created_at)
-                .bind(c.id)
-                .bind(limit)
-                .fetch_all(&state.db)
-                .await
-            } else {
-                sqlx::query_as(
-                    "SELECT * FROM response_scores WHERE request_id = $1
-                     ORDER BY vote_score DESC NULLS LAST, created_at DESC LIMIT $2",
-                )
-                .bind(request_id)
-                .bind(limit)
-                .fetch_all(&state.db)
-                .await
-            }
-        } else if let Some(cursor) = &query.cursor {
-            let c = crate::db::decode_cursor(cursor)?;
-            sqlx::query_as(
-                "SELECT * FROM response_scores WHERE request_id = $1 AND (created_at, id) < ($2, $3)
-                 ORDER BY created_at DESC, id DESC LIMIT $4",
-            )
-            .bind(request_id)
-            .bind(c.created_at)
-            .bind(c.id)
-            .bind(limit)
-            .fetch_all(&state.db)
-            .await
-        } else {
-            sqlx::query_as(
-                "SELECT * FROM response_scores WHERE request_id = $1
-                 ORDER BY created_at DESC, id DESC LIMIT $2",
-            )
-            .bind(request_id)
-            .bind(limit)
-            .fetch_all(&state.db)
-            .await
-        }
-    } else if let Some(agent_id) = query.agent_id {
-        if let Some(cursor) = &query.cursor {
-            let c = crate::db::decode_cursor(cursor)?;
-            sqlx::query_as(
-                "SELECT * FROM response_scores WHERE agent_id = $1 AND (created_at, id) < ($2, $3)
-                 ORDER BY created_at DESC, id DESC LIMIT $4",
-            )
-            .bind(agent_id)
-            .bind(c.created_at)
-            .bind(c.id)
-            .bind(limit)
-            .fetch_all(&state.db)
-            .await
-        } else {
-            sqlx::query_as(
-                "SELECT * FROM response_scores WHERE agent_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2",
-            )
-            .bind(agent_id)
-            .bind(limit)
-            .fetch_all(&state.db)
-            .await
-        }
-    } else if sort_by_top {
-        sqlx::query_as(
-            "SELECT * FROM response_scores ORDER BY vote_score DESC NULLS LAST, created_at DESC LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await
-    } else if let Some(cursor) = &query.cursor {
-        let c = crate::db::decode_cursor(cursor)?;
-        sqlx::query_as(
-            "SELECT * FROM response_scores WHERE (created_at, id) < ($1, $2)
-             ORDER BY created_at DESC, id DESC LIMIT $3",
-        )
-        .bind(c.created_at)
-        .bind(c.id)
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await
+    let mut conditions = Vec::new();
+    let mut param_idx = 1u32;
+
+    if query.request_id.is_some() {
+        conditions.push(format!("request_id = ${param_idx}"));
+        param_idx += 1;
+    } else if query.agent_id.is_some() {
+        conditions.push(format!("agent_id = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(crate::db::decode_cursor)
+        .transpose()?;
+
+    if cursor.is_some() {
+        conditions.push(format!(
+            "(created_at, id) < (${}, ${})",
+            param_idx,
+            param_idx + 1
+        ));
+        param_idx += 2;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
     } else {
-        sqlx::query_as("SELECT * FROM response_scores ORDER BY created_at DESC, id DESC LIMIT $1")
-            .bind(limit)
-            .fetch_all(&state.db)
-            .await
-    }?;
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let order_by = if sort_by_top {
+        "ORDER BY vote_score DESC NULLS LAST, created_at DESC"
+    } else {
+        "ORDER BY created_at DESC, id DESC"
+    };
+
+    let sql = format!("SELECT * FROM response_scores {where_clause} {order_by} LIMIT ${param_idx}");
+
+    let mut q = sqlx::query_as::<_, ResponseWithScores>(&sql);
+    if let Some(request_id) = query.request_id {
+        q = q.bind(request_id);
+    } else if let Some(agent_id) = query.agent_id {
+        q = q.bind(agent_id);
+    }
+    if let Some(ref c) = cursor {
+        q = q.bind(c.created_at).bind(c.id);
+    }
+    q = q.bind(limit);
+
+    let responses: Vec<ResponseWithScores> = q.fetch_all(&state.db).await?;
 
     let next_cursor = if responses.len() == limit as usize {
         responses
@@ -270,7 +237,6 @@ pub async fn vote_response(
         .await?;
     }
 
-    // Read computed scores from view
     let (upvotes, downvotes): (i64, i64) =
         sqlx::query_as("SELECT upvotes, downvotes FROM response_scores WHERE id = $1")
             .bind(response_id)
@@ -302,7 +268,11 @@ pub async fn submit_evaluation(
             "Score must be between 0.0 and 1.0".to_string(),
         ));
     }
-    let reasoning = crate::validate::optional_trimmed("reasoning", &body.reasoning, 2000)?;
+    let reasoning = crate::validate::optional_trimmed(
+        "reasoning",
+        &body.reasoning,
+        crate::validate::MAX_REASONING_LEN,
+    )?;
 
     // Verify criterion exists
     let criterion_exists: Option<Uuid> =

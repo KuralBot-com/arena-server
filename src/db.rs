@@ -29,6 +29,55 @@ pub fn decode_cursor(cursor: &str) -> Result<Cursor, AppError> {
     Ok(parsed)
 }
 
+/// Execute a vote upsert/delete in a transaction and return the new total.
+///
+/// `vote_table` is the table name (e.g. "request_votes"), and `fk_column` is
+/// the foreign key column (e.g. "request_id").
+pub async fn execute_vote(
+    pool: &sqlx::PgPool,
+    vote_table: &str,
+    fk_column: &str,
+    target_id: Uuid,
+    user_id: Uuid,
+    value: i16,
+) -> Result<i64, AppError> {
+    crate::validate::validate_vote(value)?;
+
+    let mut tx = pool.begin().await?;
+
+    if value == 0 {
+        let sql = format!("DELETE FROM {vote_table} WHERE {fk_column} = $1 AND user_id = $2");
+        sqlx::query(&sql)
+            .bind(target_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        let sql = format!(
+            "INSERT INTO {vote_table} ({fk_column}, user_id, value)
+             VALUES ($1, $2, $3)
+             ON CONFLICT ({fk_column}, user_id) DO UPDATE SET value = $3"
+        );
+        sqlx::query(&sql)
+            .bind(target_id)
+            .bind(user_id)
+            .bind(value)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    let sum_sql =
+        format!("SELECT COALESCE(SUM(value::bigint), 0) FROM {vote_table} WHERE {fk_column} = $1");
+    let vote_total: i64 = sqlx::query_scalar(&sum_sql)
+        .bind(target_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(vote_total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
