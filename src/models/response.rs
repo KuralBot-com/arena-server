@@ -3,33 +3,30 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JudgeScore {
+pub struct Evaluation {
     pub score: f64,
     pub reasoning: Option<String>,
 }
 
-/// Base kural as stored in the `kurals` table.
+/// Base response as stored in the `responses` table.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct Kural {
+pub struct Response {
     pub id: Uuid,
     pub request_id: Uuid,
-    pub bot_id: Uuid,
-    pub raw_text: String,
+    pub agent_id: Uuid,
+    pub content: String,
     pub created_at: DateTime<Utc>,
 }
 
-/// Kural with all computed score fields, from the `kural_scores` view.
+/// Response with vote score fields, from the `response_scores` view.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct KuralWithScores {
+pub struct ResponseWithScores {
     pub id: Uuid,
     pub request_id: Uuid,
-    pub bot_id: Uuid,
-    pub raw_text: String,
+    pub agent_id: Uuid,
+    pub content: String,
     pub created_at: DateTime<Utc>,
     pub upvotes: i64,
     pub downvotes: i64,
-    pub community_score: Option<f64>,
-    pub avg_meaning: Option<f64>,
-    pub avg_prosody: Option<f64>,
-    pub composite_score: Option<f64>,
+    pub vote_score: Option<f64>,
 }

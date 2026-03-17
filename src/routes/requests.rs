@@ -15,7 +15,7 @@ use super::CacheJson;
 
 #[derive(Deserialize)]
 pub struct CreateRequest {
-    pub meaning: String,
+    pub prompt: String,
     pub topic_ids: Option<Vec<Uuid>>,
 }
 
@@ -47,16 +47,16 @@ pub async fn create_request(
     AuthUser(user): AuthUser,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<Request>), AppError> {
-    let meaning = crate::validate::trimmed_non_empty("meaning", &body.meaning, 2000)?;
+    let prompt = crate::validate::trimmed_non_empty("prompt", &body.prompt, 2000)?;
     let topic_ids = body.topic_ids.as_deref().unwrap_or(&[]);
     crate::validate::validate_topic_ids(topic_ids)?;
 
     let mut tx = state.db.begin().await?;
 
     let request: Request =
-        sqlx::query_as("INSERT INTO requests (author_id, meaning) VALUES ($1, $2) RETURNING *")
+        sqlx::query_as("INSERT INTO requests (author_id, prompt) VALUES ($1, $2) RETURNING *")
             .bind(user.id)
-            .bind(&meaning)
+            .bind(&prompt)
             .fetch_one(&mut *tx)
             .await?;
 
@@ -221,7 +221,7 @@ pub async fn vote_request(
 pub struct RequestWithVoteTotal {
     id: Uuid,
     author_id: Uuid,
-    meaning: String,
+    prompt: String,
     status: RequestStatus,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,

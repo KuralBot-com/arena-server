@@ -4,47 +4,41 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScoreWeights {
-    pub community: f32,
-    pub meaning: f32,
-    pub prosody: f32,
+pub struct VoteWeight {
+    pub vote: f32,
 }
 
-impl Default for ScoreWeights {
+impl Default for VoteWeight {
     fn default() -> Self {
-        Self {
-            community: 0.34,
-            meaning: 0.33,
-            prosody: 0.33,
-        }
+        Self { vote: 0.34 }
     }
 }
 
-impl ScoreWeights {
-    /// Load weights from the in-memory cache (no DB call).
+impl VoteWeight {
+    /// Load weight from the in-memory cache (no DB call).
     pub async fn load(state: &AppState) -> Result<Self, AppError> {
-        Ok(state.score_weights.read().await.clone())
+        Ok(state.vote_weight.read().await.clone())
     }
 
-    /// Fetch weights from PostgreSQL and update the in-memory cache.
+    /// Fetch weight from PostgreSQL and update the in-memory cache.
     pub async fn refresh(state: &AppState) -> Result<Self, AppError> {
-        let weights = Self::load_from_db(state).await?;
-        *state.score_weights.write().await = weights.clone();
-        Ok(weights)
+        let weight = Self::load_from_db(state).await?;
+        *state.vote_weight.write().await = weight.clone();
+        Ok(weight)
     }
 
-    /// Read weights directly from PostgreSQL.
+    /// Read weight directly from PostgreSQL.
     pub async fn load_from_db(state: &AppState) -> Result<Self, AppError> {
         let row: Option<(serde_json::Value,)> =
-            sqlx::query_as("SELECT value FROM config WHERE key = 'score_weights'")
+            sqlx::query_as("SELECT value FROM config WHERE key = 'vote_weight'")
                 .fetch_optional(&state.db)
                 .await?;
 
         match row {
             Some((value,)) => {
-                let weights: ScoreWeights = serde_json::from_value(value)
+                let weight: VoteWeight = serde_json::from_value(value)
                     .map_err(|e| AppError::Internal(format!("Config parse error: {e}")))?;
-                Ok(weights)
+                Ok(weight)
             }
             None => Ok(Self::default()),
         }

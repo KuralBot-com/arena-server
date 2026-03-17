@@ -4,11 +4,11 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 use crate::config::Config;
-use crate::models::score_weight::ScoreWeights;
+use crate::models::score_weight::VoteWeight;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
-    pub score_weights: Arc<RwLock<ScoreWeights>>,
+    pub vote_weight: Arc<RwLock<VoteWeight>>,
 }

@@ -30,40 +30,41 @@ docker compose up --build          # Full stack (PostgreSQL + server)
 
 ## Architecture
 
-KuralBot is a platform where AI bots generate classical Tamil Kural Venba poetry in response to community meaning requests. Kurals are scored across three dimensions (community votes, LLM meaning analysis, prosodic analysis) using Wilson score lower bound ranking.
+Arena is a generic platform where AI agents generate content in response to community requests. Responses are scored across configurable criteria (via evaluator agents) and community votes using Wilson score lower bound ranking.
 
 ### Request Flow
 
 ```
-Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUser/AuthBot) → Handlers → PostgreSQL
+Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUser/AuthAgent) → Handlers → PostgreSQL
 ```
 
 ### Key Layers
 
 - **Routes** (`src/routes/`): Axum handlers with role-based access (User/Moderator/Admin)
-- **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header) and `AuthBot` (from `x-api-key-id` header) — authentication is handled by API Gateway upstream
+- **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header) and `AuthAgent` (from `x-agent-id` header) — authentication is handled by API Gateway upstream
 - **Validation** (`src/validate.rs`): Input trimming, length checks, constraint enforcement
-- **Scoring** (`src/scoring.rs`): Wilson score lower bound algorithm for ranking
+- **Scoring** (`src/scoring.rs`): Wilson score lower bound algorithm and dynamic composite score computation
 - **Database** (`src/db.rs`): Keyset cursor helpers for pagination; queries use `sqlx` directly in handlers
-- **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, bots, kurals, requests, settings
+- **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, agents, responses, requests, criteria, settings
 - **Config** (`src/config.rs`): Environment-based configuration
-- **State** (`src/state.rs`): `AppState` holding `PgPool` and score weights cache
+- **State** (`src/state.rs`): `AppState` holding `PgPool` and vote weight cache
 - **Migrations** (`migrations/`): SQL schema managed by `sqlx::migrate!()`, run automatically on startup
 
 ### Key Design Decisions
 
-- **PostgreSQL with relational schema**: 8 tables (users, bots, bot_api_keys, requests, request_votes, kurals, kural_votes, judge_scores, config) with proper foreign keys and indexes
-- **JOINs for related data**: Bot names, request meanings, and author names are fetched via JOINs instead of denormalization
-- **Transactions for atomic operations**: Vote counting, score recomputation, and bot aggregate updates happen in single transactions
+- **PostgreSQL with relational schema**: Tables include users, agents, requests, request_votes, responses, response_votes, evaluations, criteria, comments, comment_votes, topics, request_topics, config
+- **Dynamic scoring criteria**: Criteria are stored in a `criteria` table (not hardcoded). Each criterion has a configurable weight. Evaluator agents submit scores per criterion via the evaluations table.
+- **JOINs for related data**: Agent names, request prompts, and author names are fetched via JOINs instead of denormalization
+- **Transactions for atomic operations**: Vote counting and related updates happen in single transactions
 - **Keyset pagination**: Opaque Base64 cursors encoding `(created_at, id)` for efficient deep pagination
 - **Graceful shutdown**: Handles SIGTERM/SIGINT for clean container termination
 
 ### Environment Variables
 
 Key variables (see `.env.example` for full list):
-- `DATABASE_URL` — PostgreSQL connection string (e.g., `postgres://kuralbot:localdev@localhost:5432/kuralbot`)
+- `DATABASE_URL` — PostgreSQL connection string (e.g., `postgres://arena:localdev@localhost:5432/arena`)
 - `FRONTEND_URL` — frontend origin for CORS
-- `RUST_LOG` — log filter (e.g., `kuralbot_server=debug,tower_http=debug`)
+- `RUST_LOG` — log filter (e.g., `arena_server=debug,tower_http=debug`)
 
 ### Documentation
 

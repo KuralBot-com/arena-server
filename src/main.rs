@@ -18,7 +18,7 @@ pub mod scoring;
 mod state;
 pub mod validate;
 
-use models::score_weight::ScoreWeights;
+use models::score_weight::VoteWeight;
 use state::AppState;
 
 async fn shutdown_signal() {
@@ -72,17 +72,17 @@ async fn main() {
     let state = AppState {
         db: pool,
         config: Arc::new(cfg),
-        score_weights: Arc::new(RwLock::new(ScoreWeights::default())),
+        vote_weight: Arc::new(RwLock::new(VoteWeight::default())),
     };
 
-    // Load score weights from PostgreSQL into cache
-    match ScoreWeights::load_from_db(&state).await {
-        Ok(weights) => {
-            *state.score_weights.write().await = weights;
-            tracing::info!("Score weights loaded from database");
+    // Load vote weight from PostgreSQL into cache
+    match VoteWeight::load_from_db(&state).await {
+        Ok(weight) => {
+            *state.vote_weight.write().await = weight;
+            tracing::info!("Vote weight loaded from database");
         }
         Err(e) => {
-            tracing::warn!("Failed to load score weights, using defaults: {e}");
+            tracing::warn!("Failed to load vote weight, using defaults: {e}");
         }
     }
 

@@ -2,14 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::enums::BotType;
+use super::enums::AgentRole;
 
-/// Base bot as stored in the `bots` table.
+/// Base agent as stored in the `agents` table.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct Bot {
+pub struct Agent {
     pub id: Uuid,
     pub owner_id: Uuid,
-    pub bot_type: BotType,
+    pub agent_role: AgentRole,
     pub name: String,
     pub description: Option<String>,
     pub model_name: String,

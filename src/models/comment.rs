@@ -7,7 +7,7 @@ pub struct Comment {
     pub id: Uuid,
     pub author_id: Uuid,
     pub request_id: Option<Uuid>,
-    pub kural_id: Option<Uuid>,
+    pub response_id: Option<Uuid>,
     pub parent_id: Option<Uuid>,
     pub depth: i16,
     pub body: String,

@@ -7,51 +7,50 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::models::enums::RequestStatus;
 use crate::models::pagination::PaginatedResponse;
+use crate::models::score_weight::VoteWeight;
 use crate::state::AppState;
 
 use super::CacheJson;
 
 #[derive(Deserialize)]
-pub struct BotLeaderboardQuery {
+pub struct AgentLeaderboardQuery {
     pub sort: Option<String>,
     pub limit: Option<i64>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
-pub struct BotLeaderboardEntry {
-    pub bot_id: Uuid,
-    pub bot_name: String,
+pub struct AgentLeaderboardEntry {
+    pub agent_id: Uuid,
+    pub agent_name: String,
     pub model_name: String,
     pub model_version: String,
     pub owner_display_name: String,
-    pub kural_count: i64,
+    pub response_count: i64,
     pub avg_composite_score: Option<f64>,
 }
 
 #[derive(Deserialize)]
-pub struct KuralFeedQuery {
+pub struct ResponseFeedQuery {
     pub sort: Option<String>,
     pub period: Option<String>,
     pub request_id: Option<Uuid>,
-    pub bot_id: Option<Uuid>,
+    pub agent_id: Option<Uuid>,
     pub topic: Option<String>,
     pub limit: Option<i64>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
-pub struct KuralFeedEntry {
+pub struct ResponseFeedEntry {
     pub id: Uuid,
     pub request_id: Uuid,
-    pub bot_id: Uuid,
-    pub raw_text: String,
+    pub agent_id: Uuid,
+    pub content: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    pub bot_name: Option<String>,
-    pub request_meaning: Option<String>,
+    pub agent_name: Option<String>,
+    pub request_prompt: Option<String>,
     pub upvotes: i64,
     pub downvotes: i64,
-    pub community_score: Option<f64>,
-    pub avg_meaning_score: Option<f64>,
-    pub avg_prosody_score: Option<f64>,
+    pub vote_score: Option<f64>,
     pub composite_score: Option<f64>,
 }
 
@@ -63,8 +62,8 @@ pub struct UserContributionStats {
     pub member_since: chrono::DateTime<chrono::Utc>,
     pub requests_created: i64,
     pub votes_cast: i64,
-    pub bots_owned: i64,
-    pub avg_bot_composite_score: Option<f64>,
+    pub agents_owned: i64,
+    pub avg_agent_composite_score: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -79,11 +78,11 @@ pub struct RequestCompletionQuery {
 pub struct RequestCompletionEntry {
     pub id: Uuid,
     pub author_display_name: Option<String>,
-    pub meaning: String,
+    pub prompt: String,
     pub status: RequestStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub vote_total: i64,
-    pub kural_count: i64,
+    pub response_count: i64,
 }
 
 pub async fn user_stats(
@@ -98,12 +97,9 @@ pub async fn user_stats(
             u.created_at as member_since,
             (SELECT COUNT(*) FROM requests WHERE author_id = u.id) as requests_created,
             (SELECT COUNT(*) FROM request_votes WHERE user_id = u.id)
-                + (SELECT COUNT(*) FROM kural_votes WHERE user_id = u.id) as votes_cast,
-            (SELECT COUNT(*) FROM bots WHERE owner_id = u.id) as bots_owned,
-            (SELECT AVG(bs.avg_composite_score)
-             FROM bot_stats bs
-             WHERE bs.owner_id = u.id AND bs.scored_kural_count > 0
-            ) as avg_bot_composite_score
+                + (SELECT COUNT(*) FROM response_votes WHERE user_id = u.id) as votes_cast,
+            (SELECT COUNT(*) FROM agents WHERE owner_id = u.id) as agents_owned,
+            NULL::double precision as avg_agent_composite_score
          FROM users u
          WHERE u.id = $1",
     )
@@ -128,7 +124,7 @@ pub async fn request_completion(
     let order_clause = match query.sort.as_deref() {
         Some("newest") => "r.created_at DESC",
         Some("trending") => "vote_total DESC, r.created_at DESC",
-        _ => "kural_count DESC, r.created_at DESC",
+        _ => "response_count DESC, r.created_at DESC",
     };
 
     let mut conditions = vec!["r.status = $1".to_string()];
@@ -145,16 +141,16 @@ pub async fn request_completion(
 
     let sql = format!(
         "SELECT
-            r.id, u.display_name as author_display_name, r.meaning, r.status, r.created_at,
+            r.id, u.display_name as author_display_name, r.prompt, r.status, r.created_at,
             COALESCE(SUM(rv.value::bigint), 0) as vote_total,
-            COUNT(DISTINCT k.id) as kural_count
+            COUNT(DISTINCT resp.id) as response_count
          FROM requests r
          JOIN users u ON u.id = r.author_id
          LEFT JOIN request_votes rv ON rv.request_id = r.id
-         LEFT JOIN kurals k ON k.request_id = r.id
+         LEFT JOIN responses resp ON resp.request_id = r.id
          {extra_joins}
          {where_clause}
-         GROUP BY r.id, u.display_name, r.meaning, r.status, r.created_at
+         GROUP BY r.id, u.display_name, r.prompt, r.status, r.created_at
          ORDER BY {order_clause}
          LIMIT ${param_idx}"
     );
@@ -178,11 +174,12 @@ pub async fn request_completion(
     ))
 }
 
-pub async fn top_kurals(
+pub async fn top_responses(
     State(state): State<AppState>,
-    Query(query): Query<KuralFeedQuery>,
-) -> Result<CacheJson<PaginatedResponse<KuralFeedEntry>>, AppError> {
+    Query(query): Query<ResponseFeedQuery>,
+) -> Result<CacheJson<PaginatedResponse<ResponseFeedEntry>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
+    let vote_weight = VoteWeight::load(&state).await?;
 
     let cutoff = match query.period.as_deref() {
         Some("today") => Some(chrono::Utc::now() - chrono::Duration::days(1)),
@@ -193,30 +190,29 @@ pub async fn top_kurals(
     };
 
     let order_clause = match query.sort.as_deref() {
-        Some("top") => "k.composite_score DESC NULLS LAST, k.created_at DESC",
-        Some("rising") => "k.upvotes DESC, k.created_at DESC",
-        Some("new") => "k.created_at DESC",
-        _ => "k.community_score DESC NULLS LAST, k.created_at DESC",
+        Some("top") | Some("rising") => "composite_score DESC NULLS LAST, rs.created_at DESC",
+        Some("new") => "rs.created_at DESC",
+        _ => "rs.vote_score DESC NULLS LAST, rs.created_at DESC",
     };
 
     // Build WHERE conditions
     let mut conditions = Vec::new();
-    let mut param_idx = 1u32;
+    let mut param_idx = 2u32; // $1 is vote_weight
     let mut extra_joins = String::new();
 
     if cutoff.is_some() {
-        conditions.push(format!("k.created_at >= ${param_idx}"));
+        conditions.push(format!("rs.created_at >= ${param_idx}"));
         param_idx += 1;
     }
     if query.request_id.is_some() {
-        conditions.push(format!("k.request_id = ${param_idx}"));
+        conditions.push(format!("rs.request_id = ${param_idx}"));
         param_idx += 1;
-    } else if query.bot_id.is_some() {
-        conditions.push(format!("k.bot_id = ${param_idx}"));
+    } else if query.agent_id.is_some() {
+        conditions.push(format!("rs.agent_id = ${param_idx}"));
         param_idx += 1;
     }
     if query.topic.is_some() {
-        extra_joins = "JOIN request_topics rtp ON rtp.request_id = k.request_id JOIN topics tp ON tp.id = rtp.topic_id".to_string();
+        extra_joins = "JOIN request_topics rtp ON rtp.request_id = rs.request_id JOIN topics tp ON tp.id = rtp.topic_id".to_string();
         conditions.push(format!("tp.slug = ${param_idx}"));
         param_idx += 1;
     }
@@ -227,18 +223,34 @@ pub async fn top_kurals(
         format!("WHERE {}", conditions.join(" AND "))
     };
 
+    // Compute composite score dynamically using criteria weights
     let sql = format!(
         "SELECT
-            k.id, k.request_id, k.bot_id, k.raw_text, k.created_at,
-            b.name as bot_name, r.meaning as request_meaning,
-            k.upvotes, k.downvotes,
-            k.community_score,
-            k.avg_meaning as avg_meaning_score,
-            k.avg_prosody as avg_prosody_score,
-            k.composite_score
-         FROM kural_scores k
-         JOIN bots b ON b.id = k.bot_id
-         JOIN requests r ON r.id = k.request_id
+            rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
+            a.name as agent_name, req.prompt as request_prompt,
+            rs.upvotes, rs.downvotes,
+            rs.vote_score,
+            (SELECT
+                CASE WHEN (COALESCE($1::real, 0) + COALESCE(SUM(c.weight), 0)) = 0 THEN NULL
+                ELSE (
+                    COALESCE(rs.vote_score * $1::real, 0) +
+                    COALESCE(SUM(ea.avg_score * c.weight), 0)
+                ) / (
+                    CASE WHEN rs.vote_score IS NOT NULL THEN $1::real ELSE 0 END +
+                    COALESCE(SUM(CASE WHEN ea.avg_score IS NOT NULL THEN c.weight ELSE 0 END), 0)
+                ) * 100
+                END
+             FROM criteria c
+             LEFT JOIN (
+                SELECT criterion_id, AVG(score) as avg_score
+                FROM evaluations WHERE response_id = rs.id
+                GROUP BY criterion_id
+             ) ea ON ea.criterion_id = c.id
+             WHERE rs.vote_score IS NOT NULL OR ea.avg_score IS NOT NULL
+            ) as composite_score
+         FROM response_scores rs
+         JOIN agents a ON a.id = rs.agent_id
+         JOIN requests req ON req.id = rs.request_id
          {extra_joins}
          {where_clause}
          ORDER BY {order_clause}
@@ -246,15 +258,15 @@ pub async fn top_kurals(
     );
 
     // Bind parameters dynamically
-    let mut q = sqlx::query_as::<_, KuralFeedEntry>(&sql);
+    let mut q = sqlx::query_as::<_, ResponseFeedEntry>(&sql).bind(vote_weight.vote);
 
     if let Some(cutoff) = cutoff {
         q = q.bind(cutoff);
     }
     if let Some(request_id) = query.request_id {
         q = q.bind(request_id);
-    } else if let Some(bot_id) = query.bot_id {
-        q = q.bind(bot_id);
+    } else if let Some(agent_id) = query.agent_id {
+        q = q.bind(agent_id);
     }
     if let Some(ref topic) = query.topic {
         q = q.bind(topic);
@@ -273,31 +285,60 @@ pub async fn top_kurals(
     ))
 }
 
-pub async fn bot_leaderboard(
+pub async fn agent_leaderboard(
     State(state): State<AppState>,
-    Query(query): Query<BotLeaderboardQuery>,
-) -> Result<CacheJson<PaginatedResponse<BotLeaderboardEntry>>, AppError> {
+    Query(query): Query<AgentLeaderboardQuery>,
+) -> Result<CacheJson<PaginatedResponse<AgentLeaderboardEntry>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit) as i64;
+    let vote_weight = VoteWeight::load(&state).await?;
 
     let order_clause = match query.sort.as_deref() {
-        Some("prolific") => "bs.kural_count DESC, bs.avg_composite_score DESC NULLS LAST",
-        _ => "bs.avg_composite_score DESC NULLS LAST, bs.kural_count DESC",
+        Some("prolific") => "response_count DESC, avg_composite_score DESC NULLS LAST",
+        _ => "avg_composite_score DESC NULLS LAST, response_count DESC",
     };
 
     let sql = format!(
-        "SELECT
-            bs.id as bot_id, bs.name as bot_name, bs.model_name, bs.model_version,
+        "WITH agent_responses AS (
+            SELECT
+                rs.agent_id,
+                rs.id as response_id,
+                rs.vote_score,
+                (SELECT
+                    CASE WHEN (COALESCE($1::real, 0) + COALESCE(SUM(c.weight), 0)) = 0 THEN NULL
+                    ELSE (
+                        COALESCE(rs.vote_score * $1::real, 0) +
+                        COALESCE(SUM(ea.avg_score * c.weight), 0)
+                    ) / (
+                        CASE WHEN rs.vote_score IS NOT NULL THEN $1::real ELSE 0 END +
+                        COALESCE(SUM(CASE WHEN ea.avg_score IS NOT NULL THEN c.weight ELSE 0 END), 0)
+                    ) * 100
+                    END
+                 FROM criteria c
+                 LEFT JOIN (
+                    SELECT criterion_id, AVG(score) as avg_score
+                    FROM evaluations WHERE response_id = rs.id
+                    GROUP BY criterion_id
+                 ) ea ON ea.criterion_id = c.id
+                 WHERE rs.vote_score IS NOT NULL OR ea.avg_score IS NOT NULL
+                ) as composite_score
+            FROM response_scores rs
+        )
+        SELECT
+            a.id as agent_id, a.name as agent_name, a.model_name, a.model_version,
             u.display_name as owner_display_name,
-            bs.kural_count,
-            bs.avg_composite_score
-         FROM bot_stats bs
-         JOIN users u ON u.id = bs.owner_id
-         WHERE bs.bot_type = 'poet' AND bs.is_active = true
+            COUNT(ar.response_id) as response_count,
+            AVG(ar.composite_score) as avg_composite_score
+         FROM agents a
+         JOIN users u ON u.id = a.owner_id
+         LEFT JOIN agent_responses ar ON ar.agent_id = a.id
+         WHERE a.agent_role = 'creator' AND a.is_active = true
+         GROUP BY a.id, a.name, a.model_name, a.model_version, u.display_name
          ORDER BY {order_clause}
-         LIMIT $1"
+         LIMIT $2"
     );
 
-    let entries: Vec<BotLeaderboardEntry> = sqlx::query_as(&sql)
+    let entries: Vec<AgentLeaderboardEntry> = sqlx::query_as(&sql)
+        .bind(vote_weight.vote)
         .bind(limit)
         .fetch_all(&state.db)
         .await?;

@@ -17,6 +17,32 @@ pub fn wilson_lower_bound(upvotes: i64, downvotes: i64) -> Option<f64> {
     Some(numerator / denominator)
 }
 
+/// Composite score from vote score and dynamic criteria averages.
+/// Returns a value in the 0–100 range, or None if no dimensions have data.
+pub fn composite_score(
+    vote_score: Option<f64>,
+    vote_weight: f32,
+    criterion_avgs: &[(f32, f64)], // (weight, avg_score) pairs
+) -> Option<f64> {
+    let mut total = 0.0;
+    let mut weight_sum = 0.0;
+
+    if let Some(vs) = vote_score {
+        total += vs * vote_weight as f64;
+        weight_sum += vote_weight as f64;
+    }
+    for &(w, avg) in criterion_avgs {
+        total += avg * w as f64;
+        weight_sum += w as f64;
+    }
+
+    if weight_sum == 0.0 {
+        None
+    } else {
+        Some((total / weight_sum) * 100.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +82,22 @@ mod tests {
         let high = wilson_lower_bound(80, 20).unwrap();
         let low = wilson_lower_bound(20, 80).unwrap();
         assert!(high > low);
+    }
+
+    #[test]
+    fn composite_no_data_returns_none() {
+        assert_eq!(composite_score(None, 0.34, &[]), None);
+    }
+
+    #[test]
+    fn composite_vote_only() {
+        let score = composite_score(Some(0.8), 0.34, &[]).unwrap();
+        assert!((score - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn composite_all_dimensions() {
+        let score = composite_score(Some(0.8), 0.34, &[(0.33, 0.9), (0.33, 0.7)]).unwrap();
+        assert!(score > 0.0 && score <= 100.0);
     }
 }

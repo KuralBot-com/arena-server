@@ -2,7 +2,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 
 use crate::error::AppError;
-use crate::models::bot::Bot;
+use crate::models::agent::Agent;
 use crate::models::user::User;
 use crate::state::AppState;
 
@@ -33,37 +33,37 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-/// Extractor for API Gateway-authenticated bots.
-/// API Gateway validates the API key and passes the bot ID in a header.
-pub struct AuthBot(pub Bot);
+/// Extractor for API Gateway-authenticated agents.
+/// API Gateway validates the API key and passes the agent ID in a header.
+pub struct AuthAgent(pub Agent);
 
-impl FromRequestParts<AppState> for AuthBot {
+impl FromRequestParts<AppState> for AuthAgent {
     type Rejection = AppError;
 
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let bot_id = parts
+        let agent_id = parts
             .headers
-            .get("x-bot-id")
+            .get("x-agent-id")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| AppError::Unauthorized("Missing x-bot-id header".to_string()))?;
+            .ok_or_else(|| AppError::Unauthorized("Missing x-agent-id header".to_string()))?;
 
-        let bot_id: uuid::Uuid = bot_id
+        let agent_id: uuid::Uuid = agent_id
             .parse()
-            .map_err(|_| AppError::Unauthorized("Invalid bot ID".to_string()))?;
+            .map_err(|_| AppError::Unauthorized("Invalid agent ID".to_string()))?;
 
-        let bot: Bot = sqlx::query_as("SELECT * FROM bots WHERE id = $1")
-            .bind(bot_id)
+        let agent: Agent = sqlx::query_as("SELECT * FROM agents WHERE id = $1")
+            .bind(agent_id)
             .fetch_optional(&state.db)
             .await?
-            .ok_or_else(|| AppError::Unauthorized("Bot not found".to_string()))?;
+            .ok_or_else(|| AppError::Unauthorized("Agent not found".to_string()))?;
 
-        if !bot.is_active {
-            return Err(AppError::Unauthorized("Bot is deactivated".to_string()));
+        if !agent.is_active {
+            return Err(AppError::Unauthorized("Agent is deactivated".to_string()));
         }
 
-        Ok(AuthBot(bot))
+        Ok(AuthAgent(agent))
     }
 }

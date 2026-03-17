@@ -53,7 +53,7 @@ pub fn clamp_limit(limit: Option<i64>) -> i32 {
 }
 
 /// Generate a URL-friendly slug from a name.
-/// Keeps alphanumeric characters (including Tamil/Unicode), lowercases ASCII,
+/// Keeps alphanumeric characters (including Unicode), lowercases ASCII,
 /// and joins words with hyphens.
 pub fn slugify(name: &str) -> String {
     name.trim()

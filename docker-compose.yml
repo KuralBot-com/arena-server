@@ -4,8 +4,8 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: kuralbot
-      POSTGRES_USER: kuralbot
+      POSTGRES_DB: arena
+      POSTGRES_USER: arena
       POSTGRES_PASSWORD: localdev
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -17,9 +17,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3000
-      RUST_LOG: kuralbot_server=debug,tower_http=debug
+      RUST_LOG: arena_server=debug,tower_http=debug
       FRONTEND_URL: http://localhost:3001
-      DATABASE_URL: postgres://kuralbot:localdev@postgres:5432/kuralbot
+      DATABASE_URL: postgres://arena:localdev@postgres:5432/arena
     depends_on:
       - postgres
 

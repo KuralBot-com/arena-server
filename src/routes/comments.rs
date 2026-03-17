@@ -60,7 +60,7 @@ async fn create_comment_inner(
     state: &AppState,
     author_id: Uuid,
     request_id: Option<Uuid>,
-    kural_id: Option<Uuid>,
+    response_id: Option<Uuid>,
     body: &CreateComment,
 ) -> Result<Comment, AppError> {
     let text = crate::validate::trimmed_non_empty("body", &body.body, 2000)?;
@@ -73,7 +73,7 @@ async fn create_comment_inner(
             .await?
             .ok_or_else(|| AppError::BadRequest("Parent comment not found".to_string()))?;
 
-        if parent.request_id != request_id || parent.kural_id != kural_id {
+        if parent.request_id != request_id || parent.response_id != response_id {
             return Err(AppError::BadRequest(
                 "Parent comment belongs to a different target".to_string(),
             ));
@@ -92,12 +92,12 @@ async fn create_comment_inner(
     };
 
     let comment: Comment = sqlx::query_as(
-        "INSERT INTO comments (author_id, request_id, kural_id, parent_id, depth, body)
+        "INSERT INTO comments (author_id, request_id, response_id, parent_id, depth, body)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
     )
     .bind(author_id)
     .bind(request_id)
-    .bind(kural_id)
+    .bind(response_id)
     .bind(parent_id)
     .bind(depth)
     .bind(&text)
@@ -110,15 +110,15 @@ async fn create_comment_inner(
 async fn list_comments_inner(
     state: &AppState,
     request_id: Option<Uuid>,
-    kural_id: Option<Uuid>,
+    response_id: Option<Uuid>,
     query: &ListCommentsQuery,
 ) -> Result<PaginatedResponse<CommentResponse>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
 
     let (target_col, target_id) = if let Some(rid) = request_id {
         ("request_id", rid)
-    } else if let Some(kid) = kural_id {
-        ("kural_id", kid)
+    } else if let Some(resp_id) = response_id {
+        ("response_id", resp_id)
     } else {
         return Err(AppError::Internal("No target specified".to_string()));
     };
@@ -198,15 +198,15 @@ pub async fn list_request_comments(
     Ok(([(header::CACHE_CONTROL, "public, max-age=5")], Json(result)))
 }
 
-pub async fn create_kural_comment(
+pub async fn create_response_comment(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(kural_id): Path<Uuid>,
+    Path(response_id): Path<Uuid>,
     Json(body): Json<CreateComment>,
 ) -> Result<(StatusCode, Json<Comment>), AppError> {
-    // Verify kural exists
-    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM kurals WHERE id = $1")
-        .bind(kural_id)
+    // Verify response exists
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM responses WHERE id = $1")
+        .bind(response_id)
         .fetch_optional(&state.db)
         .await?;
 
@@ -214,16 +214,16 @@ pub async fn create_kural_comment(
         return Err(AppError::NotFound);
     }
 
-    let comment = create_comment_inner(&state, user.id, None, Some(kural_id), &body).await?;
+    let comment = create_comment_inner(&state, user.id, None, Some(response_id), &body).await?;
     Ok((StatusCode::CREATED, Json(comment)))
 }
 
-pub async fn list_kural_comments(
+pub async fn list_response_comments(
     State(state): State<AppState>,
-    Path(kural_id): Path<Uuid>,
+    Path(response_id): Path<Uuid>,
     Query(query): Query<ListCommentsQuery>,
 ) -> Result<CacheJson<PaginatedResponse<CommentResponse>>, AppError> {
-    let result = list_comments_inner(&state, None, Some(kural_id), &query).await?;
+    let result = list_comments_inner(&state, None, Some(response_id), &query).await?;
     Ok(([(header::CACHE_CONTROL, "public, max-age=5")], Json(result)))
 }
 

@@ -32,12 +32,11 @@ pub enum UserRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(type_name = "bot_type", rename_all = "snake_case")]
+#[sqlx(type_name = "agent_role", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
-pub enum BotType {
-    Poet,
-    MeaningJudge,
-    ProsodyJudge,
+pub enum AgentRole {
+    Creator,
+    Evaluator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -47,12 +46,4 @@ pub enum RequestStatus {
     Open,
     Closed,
     Archived,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(type_name = "score_type", rename_all = "lowercase")]
-#[serde(rename_all = "lowercase")]
-pub enum ScoreType {
-    Meaning,
-    Prosody,
 }

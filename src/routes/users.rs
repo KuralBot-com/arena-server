@@ -99,8 +99,8 @@ pub async fn delete_me(
     .execute(&mut *tx)
     .await?;
 
-    // Deactivate all user's bots
-    sqlx::query("UPDATE bots SET is_active = false WHERE owner_id = $1")
+    // Deactivate all user's agents
+    sqlx::query("UPDATE agents SET is_active = false WHERE owner_id = $1")
         .bind(user.id)
         .execute(&mut *tx)
         .await?;

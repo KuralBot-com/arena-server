@@ -24,7 +24,7 @@ COPY migrations/ migrations/
 RUN if [ "$TARGETARCH" = "arm64" ] && [ "$(dpkg --print-architecture)" != "arm64" ]; then \
         PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu \
         cargo build --release --target aarch64-unknown-linux-gnu && \
-        cp target/aarch64-unknown-linux-gnu/release/kuralbot-server target/release/kuralbot-server; \
+        cp target/aarch64-unknown-linux-gnu/release/arena-server target/release/arena-server; \
     else \
         cargo build --release; \
     fi
@@ -34,7 +34,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/kuralbot-server /usr/local/bin/kuralbot-server
+COPY --from=builder /app/target/release/arena-server /usr/local/bin/arena-server
 
 WORKDIR /app
 
@@ -43,4 +43,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:3000/health/live || exit 1
 
-CMD ["kuralbot-server"]
+CMD ["arena-server"]

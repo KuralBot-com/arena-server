@@ -9,12 +9,13 @@ use crate::state::AppState;
 
 pub type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
 
-pub mod bots;
+pub mod agents;
 pub mod comments;
+pub mod criteria;
 pub mod health;
-pub mod kurals;
 pub mod leaderboard;
 pub mod requests;
+pub mod responses;
 pub mod settings;
 pub mod topics;
 pub mod users;
@@ -33,13 +34,16 @@ pub fn app(state: AppState) -> Router {
                 .delete(users::delete_me),
         )
         .route("/users/{user_id}", get(users::get_user_profile))
-        // Bots
-        .route("/bots", post(bots::create_bot).get(bots::list_bots))
+        // Agents
         .route(
-            "/bots/{bot_id}",
-            get(bots::get_bot_public)
-                .patch(bots::update_bot)
-                .delete(bots::deactivate_bot),
+            "/agents",
+            post(agents::create_agent).get(agents::list_agents),
+        )
+        .route(
+            "/agents/{agent_id}",
+            get(agents::get_agent_public)
+                .patch(agents::update_agent)
+                .delete(agents::deactivate_agent),
         )
         // Requests
         .route(
@@ -60,25 +64,27 @@ pub fn app(state: AppState) -> Router {
             "/requests/{request_id}/topics",
             put(topics::set_request_topics).get(topics::get_request_topics),
         )
-        // Kurals
+        // Responses
         .route(
-            "/kurals",
-            post(kurals::submit_kural).get(kurals::list_kurals),
+            "/responses",
+            post(responses::submit_response).get(responses::list_responses),
         )
-        .route("/kurals/{kural_id}", get(kurals::get_kural))
-        .route("/kurals/{kural_id}/vote", post(kurals::vote_kural))
+        .route("/responses/{response_id}", get(responses::get_response))
         .route(
-            "/kurals/{kural_id}/meaning-score",
-            post(kurals::submit_meaning_score),
+            "/responses/{response_id}/vote",
+            post(responses::vote_response),
         )
         .route(
-            "/kurals/{kural_id}/prosody-score",
-            post(kurals::submit_prosody_score),
+            "/responses/{response_id}/evaluations",
+            post(responses::submit_evaluation),
         )
-        .route("/kurals/{kural_id}/scores", get(kurals::get_scores))
         .route(
-            "/kurals/{kural_id}/comments",
-            post(comments::create_kural_comment).get(comments::list_kural_comments),
+            "/responses/{response_id}/scores",
+            get(responses::get_scores),
+        )
+        .route(
+            "/responses/{response_id}/comments",
+            post(comments::create_response_comment).get(comments::list_response_comments),
         )
         // Comments
         .route(
@@ -86,6 +92,15 @@ pub fn app(state: AppState) -> Router {
             axum::routing::patch(comments::update_comment).delete(comments::delete_comment),
         )
         .route("/comments/{comment_id}/vote", post(comments::vote_comment))
+        // Criteria
+        .route(
+            "/criteria",
+            post(criteria::create_criterion).get(criteria::list_criteria),
+        )
+        .route(
+            "/criteria/{criterion_id}",
+            axum::routing::patch(criteria::update_criterion).delete(criteria::delete_criterion),
+        )
         // Topics
         .route(
             "/topics",
@@ -96,8 +111,8 @@ pub fn app(state: AppState) -> Router {
             axum::routing::patch(topics::update_topic).delete(topics::delete_topic),
         )
         // Leaderboard & Discovery
-        .route("/leaderboard/bots", get(leaderboard::bot_leaderboard))
-        .route("/leaderboard/kurals", get(leaderboard::top_kurals))
+        .route("/leaderboard/agents", get(leaderboard::agent_leaderboard))
+        .route("/leaderboard/responses", get(leaderboard::top_responses))
         .route(
             "/leaderboard/users/{user_id}/stats",
             get(leaderboard::user_stats),
@@ -108,8 +123,8 @@ pub fn app(state: AppState) -> Router {
         )
         // Settings
         .route(
-            "/settings/score-weights",
-            get(settings::get_score_weights).put(settings::update_score_weights),
+            "/settings/vote-weight",
+            get(settings::get_vote_weight).put(settings::update_vote_weight),
         )
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
