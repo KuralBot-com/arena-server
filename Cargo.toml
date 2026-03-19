@@ -16,10 +16,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tower-http = { version = "0.6", features = ["trace"] }
 thiserror = "2"
 base64 = "0.22"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-cognitoidentityprovider = "1"
-aws-sdk-apigateway = "1"
+aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-apigateway = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 
 [profile.release]
 lto = true
