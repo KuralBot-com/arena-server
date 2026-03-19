@@ -4,10 +4,12 @@ use axum::http::{StatusCode, header};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use std::collections::HashMap;
+
 use crate::error::AppError;
 use crate::extractors::AuthUser;
 use crate::models::enums::UserRole;
-use crate::models::topic::Topic;
+use crate::models::topic::{Topic, TopicSummary, TopicWithCount};
 use crate::state::AppState;
 
 use super::CacheJson;
@@ -48,10 +50,41 @@ async fn fetch_request_topics(db: &sqlx::PgPool, request_id: Uuid) -> Result<Vec
     Ok(topics)
 }
 
+/// Batch-fetch topics for multiple requests in a single query.
+/// Returns a map from request_id to its list of TopicSummary.
+pub(super) async fn fetch_topics_for_requests(
+    db: &sqlx::PgPool,
+    request_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<TopicSummary>>, AppError> {
+    if request_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
+        "SELECT rt.request_id, t.id, t.name, t.slug
+         FROM request_topics rt
+         JOIN topics t ON t.id = rt.topic_id
+         WHERE rt.request_id = ANY($1)
+         ORDER BY t.name ASC",
+    )
+    .bind(request_ids)
+    .fetch_all(db)
+    .await?;
+
+    let mut map: HashMap<Uuid, Vec<TopicSummary>> = HashMap::new();
+    for (request_id, id, name, slug) in rows {
+        map.entry(request_id)
+            .or_default()
+            .push(TopicSummary { id, name, slug });
+    }
+    Ok(map)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTopic {
     pub name: String,
+    pub slug: String,
     pub description: Option<String>,
 }
 
@@ -59,6 +92,7 @@ pub struct CreateTopic {
 #[serde(deny_unknown_fields)]
 pub struct UpdateTopic {
     pub name: Option<String>,
+    pub slug: Option<String>,
     pub description: Option<String>,
 }
 
@@ -87,18 +121,12 @@ pub async fn create_topic(
         &body.name,
         crate::validate::MAX_SHORT_NAME_LEN,
     )?;
+    let slug = crate::validate::validate_slug(&body.slug)?;
     let description = crate::validate::optional_trimmed(
         "description",
         &body.description,
         crate::validate::MAX_DESCRIPTION_LEN,
     )?;
-    let slug = crate::validate::slugify(&name);
-
-    if slug.is_empty() {
-        return Err(AppError::BadRequest(
-            "Topic name must produce a valid slug".to_string(),
-        ));
-    }
 
     let topic: Topic = sqlx::query_as(
         "INSERT INTO topics (name, slug, description) VALUES ($1, $2, $3) RETURNING *",
@@ -118,10 +146,18 @@ pub async fn create_topic(
     Ok((StatusCode::CREATED, Json(topic)))
 }
 
-pub async fn list_topics(State(state): State<AppState>) -> Result<CacheJson<Vec<Topic>>, AppError> {
-    let topics: Vec<Topic> = sqlx::query_as("SELECT * FROM topics ORDER BY name ASC")
-        .fetch_all(&state.db)
-        .await?;
+pub async fn list_topics(
+    State(state): State<AppState>,
+) -> Result<CacheJson<Vec<TopicWithCount>>, AppError> {
+    let topics: Vec<TopicWithCount> = sqlx::query_as(
+        "SELECT t.*, COUNT(rt.request_id) as request_count
+         FROM topics t
+         LEFT JOIN request_topics rt ON rt.topic_id = t.id
+         GROUP BY t.id
+         ORDER BY t.name ASC",
+    )
+    .fetch_all(&state.db)
+    .await?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=60")],
@@ -149,6 +185,10 @@ pub async fn update_topic(
         }
         None => existing.name,
     };
+    let slug = match &body.slug {
+        Some(s) => crate::validate::validate_slug(s)?,
+        None => existing.slug,
+    };
     let description = match &body.description {
         Some(_) => crate::validate::optional_trimmed(
             "description",
@@ -157,7 +197,6 @@ pub async fn update_topic(
         )?,
         None => existing.description,
     };
-    let slug = crate::validate::slugify(&name);
 
     let topic: Topic = sqlx::query_as(
         "UPDATE topics SET name = $2, slug = $3, description = $4 WHERE id = $1 RETURNING *",

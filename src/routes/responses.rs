@@ -5,14 +5,44 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::{AuthAgent, AuthUser};
+use crate::extractors::{AuthAgent, AuthUser, MaybeAuthUser};
 use crate::models::enums::AgentRole;
 use crate::models::pagination::PaginatedResponse;
 use crate::models::response::{Evaluation, Response, ResponseWithScores};
 use crate::models::score_weight::VoteWeight;
+use crate::models::topic::TopicSummary;
 use crate::state::AppState;
 
 use super::CacheJson;
+
+/// SQL subquery fragment that computes `composite_score` for a response.
+/// Expects `$1` to be bound to the vote weight (f32) and `rs` to alias `response_scores`.
+pub const COMPOSITE_SCORE_SQL: &str = "
+    (SELECT
+        CASE WHEN (COALESCE($1::real, 0) + COALESCE(SUM(c.weight), 0)) = 0 THEN NULL
+        ELSE (
+            COALESCE(rs.vote_score * $1::real, 0) +
+            COALESCE(SUM(ea.avg_score * c.weight), 0)
+        ) / NULLIF(
+            CASE WHEN rs.vote_score IS NOT NULL THEN $1::real ELSE 0 END +
+            COALESCE(SUM(CASE WHEN ea.avg_score IS NOT NULL THEN c.weight ELSE 0 END), 0)
+        , 0) * 100
+        END
+     FROM criteria c
+     LEFT JOIN (
+        SELECT criterion_id, AVG(score) as avg_score
+        FROM evaluations WHERE response_id = rs.id
+        GROUP BY criterion_id
+     ) ea ON ea.criterion_id = c.id
+     WHERE rs.vote_score IS NOT NULL OR ea.avg_score IS NOT NULL
+    ) as composite_score";
+
+#[derive(Serialize)]
+pub struct ResponseWithTopics {
+    #[serde(flatten)]
+    pub response: ResponseWithScores,
+    pub topics: Vec<TopicSummary>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +55,8 @@ pub struct SubmitResponse {
 pub struct ListResponsesQuery {
     pub request_id: Option<Uuid>,
     pub agent_id: Option<Uuid>,
+    pub missing_criterion: Option<Uuid>,
+    pub topic: Option<String>,
     pub sort: Option<String>,
     pub limit: Option<i64>,
     pub cursor: Option<String>,
@@ -114,19 +146,38 @@ pub async fn submit_response(
 
 pub async fn list_responses(
     State(state): State<AppState>,
+    MaybeAuthUser(user): MaybeAuthUser,
     Query(query): Query<ListResponsesQuery>,
-) -> Result<CacheJson<PaginatedResponse<ResponseWithScores>>, AppError> {
+) -> Result<CacheJson<PaginatedResponse<ResponseWithTopics>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
     let sort_by_top = query.sort.as_deref() == Some("top");
+    let vote_weight = VoteWeight::load(&state).await?;
+    let user_id = user.map(|u| u.id);
 
     let mut conditions = Vec::new();
-    let mut param_idx = 1u32;
+    let mut param_idx = 3u32; // $1 = vote_weight, $2 = user_id
+    let mut extra_joins = String::new();
 
     if query.request_id.is_some() {
-        conditions.push(format!("request_id = ${param_idx}"));
+        conditions.push(format!("rs.request_id = ${param_idx}"));
         param_idx += 1;
     } else if query.agent_id.is_some() {
-        conditions.push(format!("agent_id = ${param_idx}"));
+        conditions.push(format!("rs.agent_id = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    if query.topic.is_some() {
+        extra_joins =
+            "JOIN request_topics rt ON rt.request_id = rs.request_id JOIN topics t ON t.id = rt.topic_id"
+                .to_string();
+        conditions.push(format!("t.slug = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    if query.missing_criterion.is_some() {
+        conditions.push(format!(
+            "NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.response_id = rs.id AND e.criterion_id = ${param_idx})"
+        ));
         param_idx += 1;
     }
 
@@ -138,7 +189,7 @@ pub async fn list_responses(
 
     if cursor.is_some() {
         conditions.push(format!(
-            "(created_at, id) < (${}, ${})",
+            "(rs.created_at, rs.id) < (${}, ${})",
             param_idx,
             param_idx + 1
         ));
@@ -152,18 +203,38 @@ pub async fn list_responses(
     };
 
     let order_by = if sort_by_top {
-        "ORDER BY vote_score DESC NULLS LAST, created_at DESC"
+        "ORDER BY rs.vote_score DESC NULLS LAST, rs.created_at DESC"
     } else {
-        "ORDER BY created_at DESC, id DESC"
+        "ORDER BY rs.created_at DESC, rs.id DESC"
     };
 
-    let sql = format!("SELECT * FROM response_scores {where_clause} {order_by} LIMIT ${param_idx}");
+    let sql = format!(
+        "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
+                a.name as agent_name, req.prompt as request_prompt,
+                rs.upvotes, rs.downvotes, rs.vote_score,
+                {COMPOSITE_SCORE_SQL},
+                (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
+                (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $2) as user_vote
+         FROM response_scores rs
+         JOIN agents a ON a.id = rs.agent_id
+         JOIN requests req ON req.id = rs.request_id
+         {extra_joins}
+         {where_clause} {order_by} LIMIT ${param_idx}"
+    );
 
-    let mut q = sqlx::query_as::<_, ResponseWithScores>(&sql);
+    let mut q = sqlx::query_as::<_, ResponseWithScores>(&sql)
+        .bind(vote_weight.vote)
+        .bind(user_id);
     if let Some(request_id) = query.request_id {
         q = q.bind(request_id);
     } else if let Some(agent_id) = query.agent_id {
         q = q.bind(agent_id);
+    }
+    if let Some(ref topic) = query.topic {
+        q = q.bind(topic);
+    }
+    if let Some(criterion_id) = query.missing_criterion {
+        q = q.bind(criterion_id);
     }
     if let Some(ref c) = cursor {
         q = q.bind(c.created_at).bind(c.id);
@@ -181,10 +252,29 @@ pub async fn list_responses(
         None
     };
 
+    let request_ids: Vec<Uuid> = responses
+        .iter()
+        .map(|r| r.request_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let topics_map = super::topics::fetch_topics_for_requests(&state.db, &request_ids).await?;
+
+    let data = responses
+        .into_iter()
+        .map(|r| {
+            let topics = topics_map.get(&r.request_id).cloned().unwrap_or_default();
+            ResponseWithTopics {
+                response: r,
+                topics,
+            }
+        })
+        .collect();
+
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=10")],
         Json(PaginatedResponse {
-            data: responses,
+            data,
             next_cursor,
             limit: limit as i64,
         }),
@@ -193,18 +283,39 @@ pub async fn list_responses(
 
 pub async fn get_response(
     State(state): State<AppState>,
+    MaybeAuthUser(user): MaybeAuthUser,
     Path(response_id): Path<Uuid>,
-) -> Result<CacheJson<ResponseWithScores>, AppError> {
+) -> Result<CacheJson<ResponseWithTopics>, AppError> {
+    let vote_weight = VoteWeight::load(&state).await?;
+    let user_id = user.map(|u| u.id);
+
     let response: ResponseWithScores =
-        sqlx::query_as("SELECT * FROM response_scores WHERE id = $1")
+        sqlx::query_as(&format!(
+            "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
+                    a.name as agent_name, req.prompt as request_prompt,
+                    rs.upvotes, rs.downvotes, rs.vote_score,
+                    {COMPOSITE_SCORE_SQL},
+                    (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
+                    (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $2) as user_vote
+             FROM response_scores rs
+             JOIN agents a ON a.id = rs.agent_id
+             JOIN requests req ON req.id = rs.request_id
+             WHERE rs.id = $3"
+        ))
+            .bind(vote_weight.vote)
+            .bind(user_id)
             .bind(response_id)
             .fetch_optional(&state.db)
             .await?
             .ok_or(AppError::NotFound)?;
 
+    let mut topics_map =
+        super::topics::fetch_topics_for_requests(&state.db, &[response.request_id]).await?;
+    let topics = topics_map.remove(&response.request_id).unwrap_or_default();
+
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=10")],
-        Json(response),
+        Json(ResponseWithTopics { response, topics }),
     ))
 }
 

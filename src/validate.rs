@@ -64,16 +64,43 @@ pub fn clamp_limit(limit: Option<i64>) -> i32 {
     limit.unwrap_or(20).clamp(1, 100) as i32
 }
 
-/// Generate a URL-friendly slug from a name.
-/// Keeps alphanumeric characters (including Unicode), lowercases ASCII,
-/// and joins words with hyphens.
+/// Generate a URL-friendly ASCII slug from a name.
+/// Keeps only ASCII alphanumeric characters, lowercases, and joins words with hyphens.
 pub fn slugify(name: &str) -> String {
     name.trim()
         .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
+        .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Validate that a slug is URL-friendly: non-empty, ASCII lowercase alphanumeric + hyphens,
+/// no leading/trailing/consecutive hyphens.
+pub fn validate_slug(slug: &str) -> Result<String, AppError> {
+    let slug = slug.trim().to_lowercase();
+    if slug.is_empty() {
+        return Err(AppError::BadRequest("slug cannot be empty".to_string()));
+    }
+    if slug.len() > MAX_SHORT_NAME_LEN {
+        return Err(AppError::BadRequest(format!(
+            "slug must be at most {MAX_SHORT_NAME_LEN} characters"
+        )));
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(AppError::BadRequest(
+            "slug must contain only lowercase letters, digits, and hyphens".to_string(),
+        ));
+    }
+    if slug.starts_with('-') || slug.ends_with('-') || slug.contains("--") {
+        return Err(AppError::BadRequest(
+            "slug must not start/end with a hyphen or contain consecutive hyphens".to_string(),
+        ));
+    }
+    Ok(slug)
 }
 
 /// Validate that a list of topic IDs does not exceed the maximum allowed.
@@ -190,6 +217,51 @@ mod tests {
     #[test]
     fn slugify_empty() {
         assert_eq!(slugify("   "), "");
+    }
+
+    #[test]
+    fn slugify_strips_non_ascii() {
+        // Tamil text produces empty slug since no ASCII alphanumeric chars
+        assert_eq!(slugify("அறம்"), "");
+    }
+
+    #[test]
+    fn validate_slug_valid() {
+        assert_eq!(
+            validate_slug("love-and-romance").unwrap(),
+            "love-and-romance"
+        );
+    }
+
+    #[test]
+    fn validate_slug_rejects_non_ascii() {
+        assert!(validate_slug("அறம்").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_leading_hyphen() {
+        assert!(validate_slug("-foo").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_trailing_hyphen() {
+        assert!(validate_slug("foo-").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_consecutive_hyphens() {
+        assert!(validate_slug("foo--bar").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_uppercase() {
+        // validate_slug lowercases input, so this should pass
+        assert_eq!(validate_slug("Foo-Bar").unwrap(), "foo-bar");
+    }
+
+    #[test]
+    fn validate_slug_rejects_empty() {
+        assert!(validate_slug("").is_err());
     }
 
     #[test]

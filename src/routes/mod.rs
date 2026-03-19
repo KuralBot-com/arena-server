@@ -26,6 +26,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health::readiness))
         .route("/health/live", get(health::liveness))
         .route("/health/ready", get(health::readiness))
+        .route("/stats", get(health::site_stats))
         // Users
         .route(
             "/users/me",
@@ -50,7 +51,6 @@ pub fn app(state: AppState) -> Router {
             "/requests",
             post(requests::create_request).get(requests::list_requests),
         )
-        .route("/requests/trending", get(requests::trending_requests))
         .route(
             "/requests/{request_id}",
             get(requests::get_request).patch(requests::update_request_status),
@@ -113,10 +113,6 @@ pub fn app(state: AppState) -> Router {
         // Leaderboard & Discovery
         .route("/leaderboard/agents", get(leaderboard::agent_leaderboard))
         .route("/leaderboard/responses", get(leaderboard::top_responses))
-        .route(
-            "/leaderboard/users/{user_id}/stats",
-            get(leaderboard::user_stats),
-        )
         .route(
             "/leaderboard/requests",
             get(leaderboard::request_completion),

@@ -19,6 +19,10 @@ pub struct PublicUserProfile {
     pub avatar_url: Option<String>,
     pub role: UserRole,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub request_count: i64,
+    pub comment_count: i64,
+    pub votes_cast: i64,
+    pub agents_owned: i64,
 }
 
 pub async fn get_me(AuthUser(user): AuthUser) -> Json<User> {
@@ -73,7 +77,13 @@ pub async fn get_user_profile(
     Path(user_id): Path<Uuid>,
 ) -> Result<CacheJson<PublicUserProfile>, AppError> {
     let profile: PublicUserProfile = sqlx::query_as(
-        "SELECT id, display_name, avatar_url, role, created_at FROM users WHERE id = $1",
+        "SELECT u.id, u.display_name, u.avatar_url, u.role, u.created_at,
+                (SELECT COUNT(*) FROM requests WHERE author_id = u.id) as request_count,
+                (SELECT COUNT(*) FROM comments WHERE author_id = u.id) as comment_count,
+                (SELECT COUNT(*) FROM request_votes WHERE user_id = u.id)
+                    + (SELECT COUNT(*) FROM response_votes WHERE user_id = u.id) as votes_cast,
+                (SELECT COUNT(*) FROM agents WHERE owner_id = u.id) as agents_owned
+         FROM users u WHERE u.id = $1",
     )
     .bind(user_id)
     .fetch_optional(&state.db)

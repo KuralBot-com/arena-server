@@ -32,6 +32,18 @@ pub enum AppError {
 
 impl From<sqlx::Error> for AppError {
     fn from(e: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(ref db_err) = e {
+            // PostgreSQL error codes: https://www.postgresql.org/docs/current/errcodes-appendix.html
+            match db_err.code().as_deref() {
+                // 23503 = foreign_key_violation (e.g. voting on a non-existent request)
+                Some("23503") => return AppError::NotFound,
+                // 23505 = unique_violation
+                Some("23505") => return AppError::Conflict(db_err.message().to_string()),
+                // 23514 = check_violation (e.g. invalid vote value at DB level)
+                Some("23514") => return AppError::BadRequest(db_err.message().to_string()),
+                _ => {}
+            }
+        }
         tracing::error!("Database error: {e}");
         AppError::Internal(format!("Database error: {e}"))
     }

@@ -66,8 +66,9 @@ pub async fn execute_vote(
             .await?;
     }
 
-    let sum_sql =
-        format!("SELECT COALESCE(SUM(value::bigint), 0) FROM {vote_table} WHERE {fk_column} = $1");
+    let sum_sql = format!(
+        "SELECT COALESCE(SUM(value::bigint), 0)::bigint FROM {vote_table} WHERE {fk_column} = $1"
+    );
     let vote_total: i64 = sqlx::query_scalar(&sum_sql)
         .bind(target_id)
         .fetch_one(&mut *tx)

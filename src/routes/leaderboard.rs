@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::header;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -54,18 +54,6 @@ pub struct ResponseFeedEntry {
     pub composite_score: Option<f64>,
 }
 
-#[derive(Serialize, sqlx::FromRow)]
-pub struct UserContributionStats {
-    pub user_id: Uuid,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-    pub member_since: chrono::DateTime<chrono::Utc>,
-    pub requests_created: i64,
-    pub votes_cast: i64,
-    pub agents_owned: i64,
-    pub avg_agent_composite_score: Option<f64>,
-}
-
 #[derive(Deserialize)]
 pub struct RequestCompletionQuery {
     pub sort: Option<String>,
@@ -83,35 +71,6 @@ pub struct RequestCompletionEntry {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub vote_total: i64,
     pub response_count: i64,
-}
-
-pub async fn user_stats(
-    State(state): State<AppState>,
-    Path(user_id): Path<Uuid>,
-) -> Result<CacheJson<UserContributionStats>, AppError> {
-    let stats: UserContributionStats = sqlx::query_as(
-        "SELECT
-            u.id as user_id,
-            u.display_name,
-            u.avatar_url,
-            u.created_at as member_since,
-            (SELECT COUNT(*) FROM requests WHERE author_id = u.id) as requests_created,
-            (SELECT COUNT(*) FROM request_votes WHERE user_id = u.id)
-                + (SELECT COUNT(*) FROM response_votes WHERE user_id = u.id) as votes_cast,
-            (SELECT COUNT(*) FROM agents WHERE owner_id = u.id) as agents_owned,
-            NULL::double precision as avg_agent_composite_score
-         FROM users u
-         WHERE u.id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
-
-    Ok((
-        [(header::CACHE_CONTROL, "public, max-age=300")],
-        Json(stats),
-    ))
 }
 
 pub async fn request_completion(
@@ -142,7 +101,7 @@ pub async fn request_completion(
     let sql = format!(
         "SELECT
             r.id, u.display_name as author_display_name, r.prompt, r.status, r.created_at,
-            COALESCE(SUM(rv.value::bigint), 0) as vote_total,
+            COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
             COUNT(DISTINCT resp.id) as response_count
          FROM requests r
          JOIN users u ON u.id = r.author_id
@@ -224,30 +183,14 @@ pub async fn top_responses(
     };
 
     // Compute composite score dynamically using criteria weights
+    let composite_sql = super::responses::COMPOSITE_SCORE_SQL;
     let sql = format!(
         "SELECT
             rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
             a.name as agent_name, req.prompt as request_prompt,
             rs.upvotes, rs.downvotes,
             rs.vote_score,
-            (SELECT
-                CASE WHEN (COALESCE($1::real, 0) + COALESCE(SUM(c.weight), 0)) = 0 THEN NULL
-                ELSE (
-                    COALESCE(rs.vote_score * $1::real, 0) +
-                    COALESCE(SUM(ea.avg_score * c.weight), 0)
-                ) / (
-                    CASE WHEN rs.vote_score IS NOT NULL THEN $1::real ELSE 0 END +
-                    COALESCE(SUM(CASE WHEN ea.avg_score IS NOT NULL THEN c.weight ELSE 0 END), 0)
-                ) * 100
-                END
-             FROM criteria c
-             LEFT JOIN (
-                SELECT criterion_id, AVG(score) as avg_score
-                FROM evaluations WHERE response_id = rs.id
-                GROUP BY criterion_id
-             ) ea ON ea.criterion_id = c.id
-             WHERE rs.vote_score IS NOT NULL OR ea.avg_score IS NOT NULL
-            ) as composite_score
+            {composite_sql}
          FROM response_scores rs
          JOIN agents a ON a.id = rs.agent_id
          JOIN requests req ON req.id = rs.request_id
@@ -297,30 +240,14 @@ pub async fn agent_leaderboard(
         _ => "avg_composite_score DESC NULLS LAST, response_count DESC",
     };
 
+    let composite_sql = super::responses::COMPOSITE_SCORE_SQL;
     let sql = format!(
         "WITH agent_responses AS (
             SELECT
                 rs.agent_id,
                 rs.id as response_id,
                 rs.vote_score,
-                (SELECT
-                    CASE WHEN (COALESCE($1::real, 0) + COALESCE(SUM(c.weight), 0)) = 0 THEN NULL
-                    ELSE (
-                        COALESCE(rs.vote_score * $1::real, 0) +
-                        COALESCE(SUM(ea.avg_score * c.weight), 0)
-                    ) / (
-                        CASE WHEN rs.vote_score IS NOT NULL THEN $1::real ELSE 0 END +
-                        COALESCE(SUM(CASE WHEN ea.avg_score IS NOT NULL THEN c.weight ELSE 0 END), 0)
-                    ) * 100
-                    END
-                 FROM criteria c
-                 LEFT JOIN (
-                    SELECT criterion_id, AVG(score) as avg_score
-                    FROM evaluations WHERE response_id = rs.id
-                    GROUP BY criterion_id
-                 ) ea ON ea.criterion_id = c.id
-                 WHERE rs.vote_score IS NOT NULL OR ea.avg_score IS NOT NULL
-                ) as composite_score
+                {composite_sql}
             FROM response_scores rs
         )
         SELECT

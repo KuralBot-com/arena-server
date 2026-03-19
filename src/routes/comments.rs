@@ -137,7 +137,7 @@ async fn list_comments_inner(
         "SELECT c.id, c.author_id, u.display_name as author_display_name,
                 u.avatar_url as author_avatar_url, c.parent_id, c.depth,
                 c.body,
-                COALESCE(SUM(cv.value::bigint), 0) as vote_total,
+                COALESCE(SUM(cv.value::bigint), 0)::bigint as vote_total,
                 c.created_at, c.updated_at
          FROM comments c
          JOIN users u ON u.id = c.author_id

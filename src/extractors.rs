@@ -33,6 +33,33 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+/// Optional version of AuthUser — returns `None` if the header is absent.
+pub struct MaybeAuthUser(pub Option<User>);
+
+impl FromRequestParts<AppState> for MaybeAuthUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let Some(user_sub) = parts
+            .headers
+            .get("x-user-sub")
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Ok(MaybeAuthUser(None));
+        };
+
+        let user: Option<User> = sqlx::query_as("SELECT * FROM users WHERE auth_provider_id = $1")
+            .bind(user_sub)
+            .fetch_optional(&state.db)
+            .await?;
+
+        Ok(MaybeAuthUser(user))
+    }
+}
+
 /// Extractor for API Gateway-authenticated agents.
 /// API Gateway validates the API key and passes the agent ID in a header.
 pub struct AuthAgent(pub Agent);
