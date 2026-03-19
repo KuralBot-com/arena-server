@@ -32,16 +32,7 @@ pub struct ListRequestsQuery {
     pub cursor: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VoteBody {
-    pub value: i16,
-}
-
-#[derive(Serialize)]
-pub struct RequestVoteResult {
-    pub vote_total: i64,
-}
+use crate::models::vote::{VoteBody, VoteResult};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,11 +62,41 @@ pub struct RequestWithTopics {
     pub topics: Vec<TopicSummary>,
 }
 
+async fn fetch_request_with_topics(
+    state: &AppState,
+    request_id: Uuid,
+    user_id: Option<Uuid>,
+) -> Result<RequestWithTopics, AppError> {
+    let request: RequestWithDetails = sqlx::query_as(
+        "SELECT r.id, r.author_id, u.display_name as author_display_name,
+                r.prompt, r.status, r.created_at, r.updated_at,
+                COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
+                (SELECT COUNT(*) FROM responses WHERE request_id = r.id) as response_count,
+                (SELECT COUNT(*) FROM comments WHERE request_id = r.id) as comment_count,
+                (SELECT rvu.value FROM request_votes rvu WHERE rvu.request_id = r.id AND rvu.user_id = $2) as user_vote
+         FROM requests r
+         JOIN users u ON u.id = r.author_id
+         LEFT JOIN request_votes rv ON rv.request_id = r.id
+         WHERE r.id = $1
+         GROUP BY r.id, u.display_name",
+    )
+    .bind(request_id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let mut topics_map = super::topics::fetch_topics_for_requests(&state.db, &[request.id]).await?;
+    let topics = topics_map.remove(&request.id).unwrap_or_default();
+
+    Ok(RequestWithTopics { request, topics })
+}
+
 pub async fn create_request(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Json(body): Json<CreateRequest>,
-) -> Result<(StatusCode, Json<Request>), AppError> {
+) -> Result<(StatusCode, Json<RequestWithTopics>), AppError> {
     let prompt = crate::validate::trimmed_non_empty(
         "prompt",
         &body.prompt,
@@ -97,7 +118,8 @@ pub async fn create_request(
 
     tx.commit().await?;
 
-    Ok((StatusCode::CREATED, Json(request)))
+    let enriched = fetch_request_with_topics(&state, request.id, Some(user.id)).await?;
+    Ok((StatusCode::CREATED, Json(enriched)))
 }
 
 pub async fn list_requests(
@@ -111,8 +133,12 @@ pub async fn list_requests(
 
     let order_clause = match query.sort.as_deref() {
         Some("top") | Some("trending") => "vote_total DESC, r.created_at DESC",
-        Some("new") => "r.created_at DESC, r.id DESC",
-        _ => "r.created_at DESC, r.id DESC",
+        Some("newest") | None => "r.created_at DESC, r.id DESC",
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "Invalid sort '{other}'. Use: newest, top, trending"
+            )));
+        }
     };
 
     // $1 = status, $2 = user_id
@@ -126,8 +152,12 @@ pub async fn list_requests(
         Some("week") => Some(chrono::Utc::now() - chrono::Duration::days(7)),
         Some("month") => Some(chrono::Utc::now() - chrono::Duration::days(30)),
         Some("year") => Some(chrono::Utc::now() - chrono::Duration::days(365)),
-        Some("all") => None,
-        _ => None,
+        Some("all") | None => None,
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "Invalid period '{other}'. Use: today, week, month, year, all"
+            )));
+        }
     };
     if cutoff.is_some() {
         conditions.push(format!("r.created_at >= ${param_idx}"));
@@ -233,32 +263,11 @@ pub async fn get_request(
     Path(request_id): Path<Uuid>,
 ) -> Result<CacheJson<RequestWithTopics>, AppError> {
     let user_id = user.map(|u| u.id);
-
-    let request: RequestWithDetails = sqlx::query_as(
-        "SELECT r.id, r.author_id, u.display_name as author_display_name,
-                r.prompt, r.status, r.created_at, r.updated_at,
-                COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
-                (SELECT COUNT(*) FROM responses WHERE request_id = r.id) as response_count,
-                (SELECT COUNT(*) FROM comments WHERE request_id = r.id) as comment_count,
-                (SELECT rvu.value FROM request_votes rvu WHERE rvu.request_id = r.id AND rvu.user_id = $2) as user_vote
-         FROM requests r
-         JOIN users u ON u.id = r.author_id
-         LEFT JOIN request_votes rv ON rv.request_id = r.id
-         WHERE r.id = $1
-         GROUP BY r.id, u.display_name",
-    )
-    .bind(request_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound)?;
-
-    let mut topics_map = super::topics::fetch_topics_for_requests(&state.db, &[request.id]).await?;
-    let topics = topics_map.remove(&request.id).unwrap_or_default();
+    let enriched = fetch_request_with_topics(&state, request_id, user_id).await?;
 
     Ok((
-        [(header::CACHE_CONTROL, "public, max-age=5")],
-        Json(RequestWithTopics { request, topics }),
+        [(header::CACHE_CONTROL, "public, max-age=10")],
+        Json(enriched),
     ))
 }
 
@@ -267,18 +276,22 @@ pub async fn update_request_status(
     AuthUser(user): AuthUser,
     Path(request_id): Path<Uuid>,
     Json(body): Json<UpdateRequestStatus>,
-) -> Result<Json<Request>, AppError> {
+) -> Result<Json<RequestWithTopics>, AppError> {
     super::topics::require_moderator(&user)?;
 
-    let request: Request =
-        sqlx::query_as("UPDATE requests SET status = $2 WHERE id = $1 RETURNING *")
-            .bind(request_id)
-            .bind(body.status)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let rows = sqlx::query("UPDATE requests SET status = $2 WHERE id = $1")
+        .bind(request_id)
+        .bind(body.status)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
 
-    Ok(Json(request))
+    if rows == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    let enriched = fetch_request_with_topics(&state, request_id, Some(user.id)).await?;
+    Ok(Json(enriched))
 }
 
 pub async fn vote_request(
@@ -286,7 +299,7 @@ pub async fn vote_request(
     AuthUser(user): AuthUser,
     Path(request_id): Path<Uuid>,
     Json(body): Json<VoteBody>,
-) -> Result<Json<RequestVoteResult>, AppError> {
+) -> Result<Json<VoteResult>, AppError> {
     let vote_total = crate::db::execute_vote(
         &state.db,
         "request_votes",
@@ -297,5 +310,5 @@ pub async fn vote_request(
     )
     .await?;
 
-    Ok(Json(RequestVoteResult { vote_total }))
+    Ok(Json(VoteResult { vote_total }))
 }

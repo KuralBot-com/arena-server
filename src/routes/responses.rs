@@ -62,18 +62,7 @@ pub struct ListResponsesQuery {
     pub cursor: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VoteResponseBody {
-    pub value: i16,
-}
-
-#[derive(Serialize)]
-pub struct VoteResult {
-    pub upvotes: i64,
-    pub downvotes: i64,
-    pub vote_total: i64,
-}
+use crate::models::vote::{VoteBody, VoteResult};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,18 +83,50 @@ pub struct CriterionScore {
 #[derive(Serialize)]
 pub struct ScoreDetail {
     pub response_id: Uuid,
-    pub upvotes: i64,
-    pub downvotes: i64,
     pub vote_score: Option<f64>,
     pub criteria_scores: Vec<CriterionScore>,
     pub composite_score: Option<f64>,
+}
+
+async fn fetch_response_with_topics(
+    state: &AppState,
+    response_id: Uuid,
+    user_id: Option<Uuid>,
+) -> Result<ResponseWithTopics, AppError> {
+    let vote_weight = VoteWeight::load(state).await?;
+
+    let response: ResponseWithScores =
+        sqlx::query_as(&format!(
+            "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
+                    a.name as agent_name, req.prompt as request_prompt,
+                    rs.vote_score,
+                    {COMPOSITE_SCORE_SQL},
+                    (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
+                    (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $2) as user_vote
+             FROM response_scores rs
+             JOIN agents a ON a.id = rs.agent_id
+             JOIN requests req ON req.id = rs.request_id
+             WHERE rs.id = $3"
+        ))
+            .bind(vote_weight.vote)
+            .bind(user_id)
+            .bind(response_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+
+    let mut topics_map =
+        super::topics::fetch_topics_for_requests(&state.db, &[response.request_id]).await?;
+    let topics = topics_map.remove(&response.request_id).unwrap_or_default();
+
+    Ok(ResponseWithTopics { response, topics })
 }
 
 pub async fn submit_response(
     State(state): State<AppState>,
     AuthAgent(agent): AuthAgent,
     Json(body): Json<SubmitResponse>,
-) -> Result<(StatusCode, Json<Response>), AppError> {
+) -> Result<(StatusCode, Json<ResponseWithTopics>), AppError> {
     if agent.agent_role != AgentRole::Creator {
         return Err(AppError::Forbidden);
     }
@@ -141,7 +162,8 @@ pub async fn submit_response(
     .fetch_one(&state.db)
     .await?;
 
-    Ok((StatusCode::CREATED, Json(response)))
+    let enriched = fetch_response_with_topics(&state, response.id, None).await?;
+    Ok((StatusCode::CREATED, Json(enriched)))
 }
 
 pub async fn list_responses(
@@ -150,7 +172,15 @@ pub async fn list_responses(
     Query(query): Query<ListResponsesQuery>,
 ) -> Result<CacheJson<PaginatedResponse<ResponseWithTopics>>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
-    let sort_by_top = query.sort.as_deref() == Some("top");
+    let sort_by_top = match query.sort.as_deref() {
+        Some("top") => true,
+        Some("newest") | None => false,
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "Invalid sort '{other}'. Use: newest, top"
+            )));
+        }
+    };
     let vote_weight = VoteWeight::load(&state).await?;
     let user_id = user.map(|u| u.id);
 
@@ -211,7 +241,7 @@ pub async fn list_responses(
     let sql = format!(
         "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
                 a.name as agent_name, req.prompt as request_prompt,
-                rs.upvotes, rs.downvotes, rs.vote_score,
+                rs.vote_score,
                 {COMPOSITE_SCORE_SQL},
                 (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
                 (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $2) as user_vote
@@ -286,36 +316,12 @@ pub async fn get_response(
     MaybeAuthUser(user): MaybeAuthUser,
     Path(response_id): Path<Uuid>,
 ) -> Result<CacheJson<ResponseWithTopics>, AppError> {
-    let vote_weight = VoteWeight::load(&state).await?;
     let user_id = user.map(|u| u.id);
-
-    let response: ResponseWithScores =
-        sqlx::query_as(&format!(
-            "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
-                    a.name as agent_name, req.prompt as request_prompt,
-                    rs.upvotes, rs.downvotes, rs.vote_score,
-                    {COMPOSITE_SCORE_SQL},
-                    (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
-                    (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $2) as user_vote
-             FROM response_scores rs
-             JOIN agents a ON a.id = rs.agent_id
-             JOIN requests req ON req.id = rs.request_id
-             WHERE rs.id = $3"
-        ))
-            .bind(vote_weight.vote)
-            .bind(user_id)
-            .bind(response_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or(AppError::NotFound)?;
-
-    let mut topics_map =
-        super::topics::fetch_topics_for_requests(&state.db, &[response.request_id]).await?;
-    let topics = topics_map.remove(&response.request_id).unwrap_or_default();
+    let enriched = fetch_response_with_topics(&state, response_id, user_id).await?;
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=10")],
-        Json(ResponseWithTopics { response, topics }),
+        Json(enriched),
     ))
 }
 
@@ -323,45 +329,19 @@ pub async fn vote_response(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(response_id): Path<Uuid>,
-    Json(body): Json<VoteResponseBody>,
+    Json(body): Json<VoteBody>,
 ) -> Result<Json<VoteResult>, AppError> {
-    crate::validate::validate_vote(body.value)?;
+    let vote_total = crate::db::execute_vote(
+        &state.db,
+        "response_votes",
+        "response_id",
+        response_id,
+        user.id,
+        body.value,
+    )
+    .await?;
 
-    let mut tx = state.db.begin().await?;
-
-    if body.value == 0 {
-        sqlx::query("DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2")
-            .bind(response_id)
-            .bind(user.id)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        sqlx::query(
-            "INSERT INTO response_votes (response_id, user_id, value)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (response_id, user_id) DO UPDATE SET value = $3",
-        )
-        .bind(response_id)
-        .bind(user.id)
-        .bind(body.value)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let (upvotes, downvotes): (i64, i64) =
-        sqlx::query_as("SELECT upvotes, downvotes FROM response_scores WHERE id = $1")
-            .bind(response_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(AppError::NotFound)?;
-
-    tx.commit().await?;
-
-    Ok(Json(VoteResult {
-        upvotes,
-        downvotes,
-        vote_total: upvotes - downvotes,
-    }))
+    Ok(Json(VoteResult { vote_total }))
 }
 
 pub async fn submit_evaluation(
@@ -438,14 +418,13 @@ pub async fn get_scores(
     let vote_weight = VoteWeight::load(&state).await?;
 
     // Get vote data from view
-    let vote_data: Option<(Uuid, i64, i64, Option<f64>)> = sqlx::query_as(
-        "SELECT id, upvotes, downvotes, vote_score FROM response_scores WHERE id = $1",
-    )
-    .bind(response_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let vote_data: Option<(Uuid, Option<f64>)> =
+        sqlx::query_as("SELECT id, vote_score FROM response_scores WHERE id = $1")
+            .bind(response_id)
+            .fetch_optional(&state.db)
+            .await?;
 
-    let (_, upvotes, downvotes, vote_score) = vote_data.ok_or(AppError::NotFound)?;
+    let (_, vote_score) = vote_data.ok_or(AppError::NotFound)?;
 
     // Get per-criterion averages
     let criteria_scores: Vec<CriterionScore> = sqlx::query_as(
@@ -491,8 +470,6 @@ pub async fn get_scores(
         [(header::CACHE_CONTROL, "public, max-age=10")],
         Json(ScoreDetail {
             response_id,
-            upvotes,
-            downvotes,
             vote_score,
             criteria_scores,
             composite_score: composite,

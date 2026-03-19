@@ -8,3 +8,4 @@ pub mod response;
 pub mod score_weight;
 pub mod topic;
 pub mod user;
+pub mod vote;

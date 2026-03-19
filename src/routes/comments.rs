@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::AuthUser;
+use crate::extractors::{AuthUser, MaybeAuthUser};
 use crate::models::comment::Comment;
 use crate::models::enums::UserRole;
 use crate::models::pagination::PaginatedResponse;
@@ -32,16 +32,7 @@ pub struct ListCommentsQuery {
     pub cursor: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VoteBody {
-    pub value: i16,
-}
-
-#[derive(Serialize)]
-pub struct CommentVoteResult {
-    pub vote_total: i64,
-}
+use crate::models::vote::{VoteBody, VoteResult};
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct CommentResponse {
@@ -53,11 +44,40 @@ pub struct CommentResponse {
     pub depth: i16,
     pub body: String,
     pub vote_total: i64,
+    pub user_vote: Option<i16>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 const MAX_DEPTH: i16 = 2;
+
+async fn fetch_comment_enriched(
+    state: &AppState,
+    comment_id: Uuid,
+    user_id: Option<Uuid>,
+) -> Result<CommentResponse, AppError> {
+    let comment: CommentResponse = sqlx::query_as(
+        "SELECT c.id, c.author_id, u.display_name as author_display_name,
+                u.avatar_url as author_avatar_url, c.parent_id, c.depth,
+                c.body,
+                COALESCE(SUM(cv.value::bigint), 0)::bigint as vote_total,
+                (SELECT cv2.value FROM comment_votes cv2
+                 WHERE cv2.comment_id = c.id AND cv2.user_id = $2) as user_vote,
+                c.created_at, c.updated_at
+         FROM comments c
+         JOIN users u ON u.id = c.author_id
+         LEFT JOIN comment_votes cv ON cv.comment_id = c.id
+         WHERE c.id = $1
+         GROUP BY c.id, u.display_name, u.avatar_url",
+    )
+    .bind(comment_id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    Ok(comment)
+}
 
 async fn create_comment_inner(
     state: &AppState,
@@ -115,6 +135,7 @@ async fn list_comments_inner(
     state: &AppState,
     request_id: Option<Uuid>,
     response_id: Option<Uuid>,
+    user_id: Option<Uuid>,
     query: &ListCommentsQuery,
 ) -> Result<PaginatedResponse<CommentResponse>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
@@ -127,10 +148,11 @@ async fn list_comments_inner(
         return Err(AppError::Internal("No target specified".to_string()));
     };
 
+    // $1 = target_id, $2 = user_id
     let (cursor_clause, limit_param) = if query.cursor.is_some() {
-        ("AND (c.created_at, c.id) > ($2, $3)", "$4")
+        ("AND (c.created_at, c.id) > ($3, $4)", "$5")
     } else {
-        ("", "$2")
+        ("", "$3")
     };
 
     let sql = format!(
@@ -138,6 +160,8 @@ async fn list_comments_inner(
                 u.avatar_url as author_avatar_url, c.parent_id, c.depth,
                 c.body,
                 COALESCE(SUM(cv.value::bigint), 0)::bigint as vote_total,
+                (SELECT cv2.value FROM comment_votes cv2
+                 WHERE cv2.comment_id = c.id AND cv2.user_id = $2) as user_vote,
                 c.created_at, c.updated_at
          FROM comments c
          JOIN users u ON u.id = c.author_id
@@ -148,7 +172,9 @@ async fn list_comments_inner(
          LIMIT {limit_param}"
     );
 
-    let mut q = sqlx::query_as::<_, CommentResponse>(&sql).bind(target_id);
+    let mut q = sqlx::query_as::<_, CommentResponse>(&sql)
+        .bind(target_id)
+        .bind(user_id);
     if let Some(cursor) = &query.cursor {
         let c = crate::db::decode_cursor(cursor)?;
         q = q.bind(c.created_at).bind(c.id);
@@ -178,7 +204,7 @@ pub async fn create_request_comment(
     AuthUser(user): AuthUser,
     Path(request_id): Path<Uuid>,
     Json(body): Json<CreateComment>,
-) -> Result<(StatusCode, Json<Comment>), AppError> {
+) -> Result<(StatusCode, Json<CommentResponse>), AppError> {
     // Verify request exists
     let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM requests WHERE id = $1")
         .bind(request_id)
@@ -190,15 +216,18 @@ pub async fn create_request_comment(
     }
 
     let comment = create_comment_inner(&state, user.id, Some(request_id), None, &body).await?;
-    Ok((StatusCode::CREATED, Json(comment)))
+    let enriched = fetch_comment_enriched(&state, comment.id, Some(user.id)).await?;
+    Ok((StatusCode::CREATED, Json(enriched)))
 }
 
 pub async fn list_request_comments(
     State(state): State<AppState>,
+    MaybeAuthUser(user): MaybeAuthUser,
     Path(request_id): Path<Uuid>,
     Query(query): Query<ListCommentsQuery>,
 ) -> Result<CacheJson<PaginatedResponse<CommentResponse>>, AppError> {
-    let result = list_comments_inner(&state, Some(request_id), None, &query).await?;
+    let user_id = user.map(|u| u.id);
+    let result = list_comments_inner(&state, Some(request_id), None, user_id, &query).await?;
     Ok(([(header::CACHE_CONTROL, "public, max-age=5")], Json(result)))
 }
 
@@ -207,7 +236,7 @@ pub async fn create_response_comment(
     AuthUser(user): AuthUser,
     Path(response_id): Path<Uuid>,
     Json(body): Json<CreateComment>,
-) -> Result<(StatusCode, Json<Comment>), AppError> {
+) -> Result<(StatusCode, Json<CommentResponse>), AppError> {
     // Verify response exists
     let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM responses WHERE id = $1")
         .bind(response_id)
@@ -219,15 +248,18 @@ pub async fn create_response_comment(
     }
 
     let comment = create_comment_inner(&state, user.id, None, Some(response_id), &body).await?;
-    Ok((StatusCode::CREATED, Json(comment)))
+    let enriched = fetch_comment_enriched(&state, comment.id, Some(user.id)).await?;
+    Ok((StatusCode::CREATED, Json(enriched)))
 }
 
 pub async fn list_response_comments(
     State(state): State<AppState>,
+    MaybeAuthUser(user): MaybeAuthUser,
     Path(response_id): Path<Uuid>,
     Query(query): Query<ListCommentsQuery>,
 ) -> Result<CacheJson<PaginatedResponse<CommentResponse>>, AppError> {
-    let result = list_comments_inner(&state, None, Some(response_id), &query).await?;
+    let user_id = user.map(|u| u.id);
+    let result = list_comments_inner(&state, None, Some(response_id), user_id, &query).await?;
     Ok(([(header::CACHE_CONTROL, "public, max-age=5")], Json(result)))
 }
 
@@ -236,7 +268,7 @@ pub async fn update_comment(
     AuthUser(user): AuthUser,
     Path(comment_id): Path<Uuid>,
     Json(body): Json<UpdateComment>,
-) -> Result<Json<Comment>, AppError> {
+) -> Result<Json<CommentResponse>, AppError> {
     let text =
         crate::validate::trimmed_non_empty("body", &body.body, crate::validate::MAX_COMMENT_LEN)?;
 
@@ -250,14 +282,14 @@ pub async fn update_comment(
         return Err(AppError::Forbidden);
     }
 
-    let comment: Comment =
-        sqlx::query_as("UPDATE comments SET body = $2 WHERE id = $1 RETURNING *")
-            .bind(comment_id)
-            .bind(&text)
-            .fetch_one(&state.db)
-            .await?;
+    sqlx::query("UPDATE comments SET body = $2 WHERE id = $1")
+        .bind(comment_id)
+        .bind(&text)
+        .execute(&state.db)
+        .await?;
 
-    Ok(Json(comment))
+    let enriched = fetch_comment_enriched(&state, comment_id, Some(user.id)).await?;
+    Ok(Json(enriched))
 }
 
 pub async fn delete_comment(
@@ -288,7 +320,7 @@ pub async fn vote_comment(
     AuthUser(user): AuthUser,
     Path(comment_id): Path<Uuid>,
     Json(body): Json<VoteBody>,
-) -> Result<Json<CommentVoteResult>, AppError> {
+) -> Result<Json<VoteResult>, AppError> {
     let vote_total = crate::db::execute_vote(
         &state.db,
         "comment_votes",
@@ -299,5 +331,5 @@ pub async fn vote_comment(
     )
     .await?;
 
-    Ok(Json(CommentVoteResult { vote_total }))
+    Ok(Json(VoteResult { vote_total }))
 }

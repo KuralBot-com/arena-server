@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::models::enums::RequestStatus;
-use crate::models::pagination::PaginatedResponse;
+use crate::extractors::MaybeAuthUser;
 use crate::models::score_weight::VoteWeight;
 use crate::state::AppState;
 
@@ -14,233 +13,83 @@ use super::CacheJson;
 
 #[derive(Deserialize)]
 pub struct AgentLeaderboardQuery {
-    pub sort: Option<String>,
+    pub period: Option<String>,
     pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, Clone)]
 pub struct AgentLeaderboardEntry {
+    pub rank: i64,
     pub agent_id: Uuid,
     pub agent_name: String,
     pub model_name: String,
     pub model_version: String,
+    pub owner_id: Uuid,
     pub owner_display_name: String,
     pub response_count: i64,
     pub avg_composite_score: Option<f64>,
 }
 
-#[derive(Deserialize)]
-pub struct ResponseFeedQuery {
-    pub sort: Option<String>,
-    pub period: Option<String>,
-    pub request_id: Option<Uuid>,
-    pub agent_id: Option<Uuid>,
-    pub topic: Option<String>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Serialize, sqlx::FromRow)]
-pub struct ResponseFeedEntry {
-    pub id: Uuid,
-    pub request_id: Uuid,
-    pub agent_id: Uuid,
-    pub content: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub agent_name: Option<String>,
-    pub request_prompt: Option<String>,
-    pub upvotes: i64,
-    pub downvotes: i64,
-    pub vote_score: Option<f64>,
-    pub composite_score: Option<f64>,
-}
-
-#[derive(Deserialize)]
-pub struct RequestCompletionQuery {
-    pub sort: Option<String>,
-    pub status: Option<RequestStatus>,
-    pub topic: Option<String>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Serialize, sqlx::FromRow)]
-pub struct RequestCompletionEntry {
-    pub id: Uuid,
-    pub author_display_name: Option<String>,
-    pub prompt: String,
-    pub status: RequestStatus,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub vote_total: i64,
-    pub response_count: i64,
-}
-
-pub async fn request_completion(
-    State(state): State<AppState>,
-    Query(query): Query<RequestCompletionQuery>,
-) -> Result<CacheJson<PaginatedResponse<RequestCompletionEntry>>, AppError> {
-    let limit = crate::validate::clamp_limit(query.limit) as i64;
-    let status = query.status.unwrap_or(RequestStatus::Open);
-
-    let order_clause = match query.sort.as_deref() {
-        Some("newest") => "r.created_at DESC",
-        Some("trending") => "vote_total DESC, r.created_at DESC",
-        _ => "response_count DESC, r.created_at DESC",
-    };
-
-    let mut conditions = vec!["r.status = $1".to_string()];
-    let mut param_idx = 2u32;
-    let mut extra_joins = String::new();
-
-    if query.topic.is_some() {
-        extra_joins = "JOIN request_topics rtp ON rtp.request_id = r.id JOIN topics tp ON tp.id = rtp.topic_id".to_string();
-        conditions.push(format!("tp.slug = ${param_idx}"));
-        param_idx += 1;
-    }
-
-    let where_clause = format!("WHERE {}", conditions.join(" AND "));
-
-    let sql = format!(
-        "SELECT
-            r.id, u.display_name as author_display_name, r.prompt, r.status, r.created_at,
-            COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
-            COUNT(DISTINCT resp.id) as response_count
-         FROM requests r
-         JOIN users u ON u.id = r.author_id
-         LEFT JOIN request_votes rv ON rv.request_id = r.id
-         LEFT JOIN responses resp ON resp.request_id = r.id
-         {extra_joins}
-         {where_clause}
-         GROUP BY r.id, u.display_name, r.prompt, r.status, r.created_at
-         ORDER BY {order_clause}
-         LIMIT ${param_idx}"
-    );
-
-    let mut q = sqlx::query_as::<_, RequestCompletionEntry>(&sql).bind(status);
-
-    if let Some(ref topic) = query.topic {
-        q = q.bind(topic);
-    }
-    q = q.bind(limit);
-
-    let entries: Vec<RequestCompletionEntry> = q.fetch_all(&state.db).await?;
-
-    Ok((
-        [(header::CACHE_CONTROL, "public, max-age=60")],
-        Json(PaginatedResponse {
-            data: entries,
-            next_cursor: None,
-            limit,
-        }),
-    ))
-}
-
-pub async fn top_responses(
-    State(state): State<AppState>,
-    Query(query): Query<ResponseFeedQuery>,
-) -> Result<CacheJson<PaginatedResponse<ResponseFeedEntry>>, AppError> {
-    let limit = crate::validate::clamp_limit(query.limit) as i64;
-    let vote_weight = VoteWeight::load(&state).await?;
-
-    let cutoff = match query.period.as_deref() {
-        Some("today") => Some(chrono::Utc::now() - chrono::Duration::days(1)),
-        Some("month") => Some(chrono::Utc::now() - chrono::Duration::days(30)),
-        Some("year") => Some(chrono::Utc::now() - chrono::Duration::days(365)),
-        Some("all") => None,
-        _ => Some(chrono::Utc::now() - chrono::Duration::days(7)),
-    };
-
-    let order_clause = match query.sort.as_deref() {
-        Some("top") | Some("rising") => "composite_score DESC NULLS LAST, rs.created_at DESC",
-        Some("new") => "rs.created_at DESC",
-        _ => "rs.vote_score DESC NULLS LAST, rs.created_at DESC",
-    };
-
-    // Build WHERE conditions
-    let mut conditions = Vec::new();
-    let mut param_idx = 2u32; // $1 is vote_weight
-    let mut extra_joins = String::new();
-
-    if cutoff.is_some() {
-        conditions.push(format!("rs.created_at >= ${param_idx}"));
-        param_idx += 1;
-    }
-    if query.request_id.is_some() {
-        conditions.push(format!("rs.request_id = ${param_idx}"));
-        param_idx += 1;
-    } else if query.agent_id.is_some() {
-        conditions.push(format!("rs.agent_id = ${param_idx}"));
-        param_idx += 1;
-    }
-    if query.topic.is_some() {
-        extra_joins = "JOIN request_topics rtp ON rtp.request_id = rs.request_id JOIN topics tp ON tp.id = rtp.topic_id".to_string();
-        conditions.push(format!("tp.slug = ${param_idx}"));
-        param_idx += 1;
-    }
-
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
-
-    // Compute composite score dynamically using criteria weights
-    let composite_sql = super::responses::COMPOSITE_SCORE_SQL;
-    let sql = format!(
-        "SELECT
-            rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
-            a.name as agent_name, req.prompt as request_prompt,
-            rs.upvotes, rs.downvotes,
-            rs.vote_score,
-            {composite_sql}
-         FROM response_scores rs
-         JOIN agents a ON a.id = rs.agent_id
-         JOIN requests req ON req.id = rs.request_id
-         {extra_joins}
-         {where_clause}
-         ORDER BY {order_clause}
-         LIMIT ${param_idx}"
-    );
-
-    // Bind parameters dynamically
-    let mut q = sqlx::query_as::<_, ResponseFeedEntry>(&sql).bind(vote_weight.vote);
-
-    if let Some(cutoff) = cutoff {
-        q = q.bind(cutoff);
-    }
-    if let Some(request_id) = query.request_id {
-        q = q.bind(request_id);
-    } else if let Some(agent_id) = query.agent_id {
-        q = q.bind(agent_id);
-    }
-    if let Some(ref topic) = query.topic {
-        q = q.bind(topic);
-    }
-    q = q.bind(limit);
-
-    let entries = q.fetch_all(&state.db).await?;
-
-    Ok((
-        [(header::CACHE_CONTROL, "public, max-age=30")],
-        Json(PaginatedResponse {
-            data: entries,
-            next_cursor: None,
-            limit,
-        }),
-    ))
+#[derive(Serialize)]
+pub struct LeaderboardResponse {
+    pub data: Vec<AgentLeaderboardEntry>,
+    pub next_cursor: Option<String>,
+    pub limit: i64,
+    pub user_rank: Option<AgentLeaderboardEntry>,
+    pub user_agents: Vec<AgentLeaderboardEntry>,
 }
 
 pub async fn agent_leaderboard(
     State(state): State<AppState>,
+    MaybeAuthUser(user): MaybeAuthUser,
     Query(query): Query<AgentLeaderboardQuery>,
-) -> Result<CacheJson<PaginatedResponse<AgentLeaderboardEntry>>, AppError> {
-    let limit = crate::validate::clamp_limit(query.limit) as i64;
+) -> Result<CacheJson<LeaderboardResponse>, AppError> {
+    let limit = crate::validate::clamp_limit(query.limit);
     let vote_weight = VoteWeight::load(&state).await?;
+    let user_id = user.map(|u| u.id);
 
-    let order_clause = match query.sort.as_deref() {
-        Some("prolific") => "response_count DESC, avg_composite_score DESC NULLS LAST",
-        _ => "avg_composite_score DESC NULLS LAST, response_count DESC",
+    let cutoff = match query.period.as_deref() {
+        Some("today") => Some(chrono::Utc::now() - chrono::Duration::days(1)),
+        Some("week") => Some(chrono::Utc::now() - chrono::Duration::days(7)),
+        Some("month") => Some(chrono::Utc::now() - chrono::Duration::days(30)),
+        Some("year") => Some(chrono::Utc::now() - chrono::Duration::days(365)),
+        Some("all") | None => None,
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "Invalid period '{other}'. Use: today, week, month, year, all"
+            )));
+        }
     };
 
     let composite_sql = super::responses::COMPOSITE_SCORE_SQL;
+
+    // Build the period filter for responses
+    let period_filter = if cutoff.is_some() {
+        "AND rs.created_at >= $2"
+    } else {
+        ""
+    };
+
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(crate::db::decode_cursor)
+        .transpose()?;
+
+    // Dynamic param indices: $1 = vote_weight, $2 = cutoff (if present)
+    let mut param_idx = if cutoff.is_some() { 3u32 } else { 2u32 };
+
+    let cursor_filter = if cursor.is_some() {
+        let clause = format!(
+            "WHERE ranked.rank > (SELECT r2.rank FROM ranked r2 WHERE r2.agent_id = ${param_idx})"
+        );
+        param_idx += 1;
+        clause
+    } else {
+        String::new()
+    };
+
     let sql = format!(
         "WITH agent_responses AS (
             SELECT
@@ -249,33 +98,118 @@ pub async fn agent_leaderboard(
                 rs.vote_score,
                 {composite_sql}
             FROM response_scores rs
+            WHERE true {period_filter}
+        ),
+        ranked AS (
+            SELECT
+                ROW_NUMBER() OVER (ORDER BY AVG(ar.composite_score) DESC NULLS LAST, COUNT(ar.response_id) DESC) as rank,
+                a.id as agent_id, a.name as agent_name, a.model_name, a.model_version,
+                a.owner_id,
+                u.display_name as owner_display_name,
+                COUNT(ar.response_id) as response_count,
+                AVG(ar.composite_score) as avg_composite_score
+            FROM agents a
+            JOIN users u ON u.id = a.owner_id
+            LEFT JOIN agent_responses ar ON ar.agent_id = a.id
+            WHERE a.agent_role = 'creator' AND a.is_active = true
+            GROUP BY a.id, a.name, a.model_name, a.model_version, a.owner_id, u.display_name
+            HAVING COUNT(ar.response_id) > 0
         )
-        SELECT
-            a.id as agent_id, a.name as agent_name, a.model_name, a.model_version,
-            u.display_name as owner_display_name,
-            COUNT(ar.response_id) as response_count,
-            AVG(ar.composite_score) as avg_composite_score
-         FROM agents a
-         JOIN users u ON u.id = a.owner_id
-         LEFT JOIN agent_responses ar ON ar.agent_id = a.id
-         WHERE a.agent_role = 'creator' AND a.is_active = true
-         GROUP BY a.id, a.name, a.model_name, a.model_version, u.display_name
-         ORDER BY {order_clause}
-         LIMIT $2"
+        SELECT rank, agent_id, agent_name, model_name, model_version,
+               owner_id, owner_display_name, response_count, avg_composite_score
+        FROM ranked
+        {cursor_filter}
+        ORDER BY rank ASC
+        LIMIT ${param_idx}"
     );
 
-    let entries: Vec<AgentLeaderboardEntry> = sqlx::query_as(&sql)
-        .bind(vote_weight.vote)
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await?;
+    let mut q = sqlx::query_as::<_, AgentLeaderboardEntry>(&sql).bind(vote_weight.vote);
+    if let Some(cutoff) = cutoff {
+        q = q.bind(cutoff);
+    }
+    if let Some(ref c) = cursor {
+        q = q.bind(c.id); // cursor.id = agent_id of last seen entry
+    }
+    q = q.bind(limit);
+
+    let entries: Vec<AgentLeaderboardEntry> = q.fetch_all(&state.db).await?;
+
+    let next_cursor = if entries.len() == limit as usize {
+        entries
+            .last()
+            .map(|e| crate::db::encode_cursor(chrono::Utc::now(), e.agent_id))
+            .transpose()?
+    } else {
+        None
+    };
+
+    // Fetch user's agents if authenticated
+    let (user_rank, user_agents) = if let Some(uid) = user_id {
+        let period_filter_user = if query.period.as_deref().is_some_and(|p| p != "all") {
+            period_filter
+        } else {
+            ""
+        };
+
+        let user_sql = format!(
+            "WITH agent_responses AS (
+                SELECT
+                    rs.agent_id,
+                    rs.id as response_id,
+                    rs.vote_score,
+                    {composite_sql}
+                FROM response_scores rs
+                WHERE true {period_filter_user}
+            ),
+            ranked AS (
+                SELECT
+                    ROW_NUMBER() OVER (ORDER BY AVG(ar.composite_score) DESC NULLS LAST, COUNT(ar.response_id) DESC) as rank,
+                    a.id as agent_id, a.name as agent_name, a.model_name, a.model_version,
+                    a.owner_id,
+                    u.display_name as owner_display_name,
+                    COUNT(ar.response_id) as response_count,
+                    AVG(ar.composite_score) as avg_composite_score
+                FROM agents a
+                JOIN users u ON u.id = a.owner_id
+                LEFT JOIN agent_responses ar ON ar.agent_id = a.id
+                WHERE a.agent_role = 'creator' AND a.is_active = true
+                GROUP BY a.id, a.name, a.model_name, a.model_version, a.owner_id, u.display_name
+                HAVING COUNT(ar.response_id) > 0
+            )
+            SELECT rank, agent_id, agent_name, model_name, model_version,
+                   owner_id, owner_display_name, response_count, avg_composite_score
+            FROM ranked
+            WHERE owner_id = $2
+            ORDER BY rank ASC"
+        );
+
+        let mut uq = sqlx::query_as::<_, AgentLeaderboardEntry>(&user_sql).bind(vote_weight.vote);
+        if let Some(cutoff_val) = query.period.as_deref().and_then(|p| match p {
+            "today" => Some(chrono::Utc::now() - chrono::Duration::days(1)),
+            "week" => Some(chrono::Utc::now() - chrono::Duration::days(7)),
+            "month" => Some(chrono::Utc::now() - chrono::Duration::days(30)),
+            "year" => Some(chrono::Utc::now() - chrono::Duration::days(365)),
+            _ => None,
+        }) {
+            uq = uq.bind(cutoff_val);
+        }
+        uq = uq.bind(uid);
+
+        let agents: Vec<AgentLeaderboardEntry> = uq.fetch_all(&state.db).await?;
+        let best = agents.first().cloned();
+        (best, agents)
+    } else {
+        (None, vec![])
+    };
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=60")],
-        Json(PaginatedResponse {
+        Json(LeaderboardResponse {
             data: entries,
-            next_cursor: None,
-            limit,
+            next_cursor,
+            limit: limit as i64,
+            user_rank,
+            user_agents,
         }),
     ))
 }

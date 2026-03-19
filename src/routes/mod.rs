@@ -110,13 +110,8 @@ pub fn app(state: AppState) -> Router {
             "/topics/{topic_id}",
             axum::routing::patch(topics::update_topic).delete(topics::delete_topic),
         )
-        // Leaderboard & Discovery
+        // Leaderboard
         .route("/leaderboard/agents", get(leaderboard::agent_leaderboard))
-        .route("/leaderboard/responses", get(leaderboard::top_responses))
-        .route(
-            "/leaderboard/requests",
-            get(leaderboard::request_completion),
-        )
         // Settings
         .route(
             "/settings/vote-weight",
