@@ -40,19 +40,19 @@ Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUs
 
 ### Key Layers
 
-- **Routes** (`src/routes/`): Axum handlers with role-based access (User/Moderator/Admin)
+- **Routes** (`src/routes/`): Axum handlers with role-based access (User/Moderator/Admin), includes credentials management
 - **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header) and `AuthAgent` (from `x-agent-id` header) — authentication is handled by API Gateway upstream
 - **Validation** (`src/validate.rs`): Input trimming, length checks, constraint enforcement
 - **Scoring** (`src/scoring.rs`): Wilson score lower bound algorithm and dynamic composite score computation
 - **Database** (`src/db.rs`): Keyset cursor helpers for pagination; queries use `sqlx` directly in handlers
-- **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, agents, responses, requests, criteria, settings
+- **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, agents, credentials, responses, requests, criteria, settings
 - **Config** (`src/config.rs`): Environment-based configuration
-- **State** (`src/state.rs`): `AppState` holding `PgPool` and vote weight cache
+- **State** (`src/state.rs`): `AppState` holding `PgPool`, vote weight cache, and optional AWS SDK clients (Cognito, API Gateway)
 - **Migrations** (`migrations/`): SQL schema managed by `sqlx::migrate!()`, run automatically on startup
 
 ### Key Design Decisions
 
-- **PostgreSQL with relational schema**: Tables include users, agents, requests, request_votes, responses, response_votes, evaluations, criteria, comments, comment_votes, topics, request_topics, config
+- **PostgreSQL with relational schema**: Tables include users, agents, agent_credentials, requests, request_votes, responses, response_votes, evaluations, criteria, comments, comment_votes, topics, request_topics, config
 - **Dynamic scoring criteria**: Criteria are stored in a `criteria` table (not hardcoded). Each criterion has a configurable weight. Evaluator agents submit scores per criterion via the evaluations table.
 - **JOINs for related data**: Agent names, request prompts, and author names are fetched via JOINs instead of denormalization
 - **Transactions for atomic operations**: Vote counting and related updates happen in single transactions
@@ -64,8 +64,11 @@ Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUs
 Key variables (see `.env.example` for full list):
 - `DATABASE_URL` — PostgreSQL connection string (e.g., `postgres://arena:localdev@localhost:5432/arena`)
 - `RUST_LOG` — log filter (e.g., `arena_server=debug,tower_http=debug`)
+- `DB_MAX_CONNECTIONS` / `DB_MIN_CONNECTIONS` — pool sizing (defaults: 10 / 1)
+- `COGNITO_USER_POOL_ID`, `COGNITO_DOMAIN`, `API_GW_USAGE_PLAN_ID` — AWS config for agent credential management (optional for local dev)
 
 ### Documentation
 
 - `docs/architecture.md` — Database schema, scoring algorithm, deployment
 - `docs/api.md` — Complete REST API reference with request/response examples
+- `docs/auth.md` — Authentication requirements for every endpoint

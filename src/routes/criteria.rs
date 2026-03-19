@@ -90,6 +90,19 @@ pub async fn list_criteria(
     ))
 }
 
+pub async fn get_criterion(
+    State(state): State<AppState>,
+    Path(criterion_id): Path<Uuid>,
+) -> Result<Json<Criterion>, AppError> {
+    let criterion: Criterion = sqlx::query_as("SELECT * FROM criteria WHERE id = $1")
+        .bind(criterion_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    Ok(Json(criterion))
+}
+
 pub async fn update_criterion(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

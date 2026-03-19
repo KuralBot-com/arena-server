@@ -11,6 +11,7 @@ pub type CacheJson<T> = ([(header::HeaderName, &'static str); 1], Json<T>);
 
 pub mod agents;
 pub mod comments;
+pub mod credentials;
 pub mod criteria;
 pub mod health;
 pub mod leaderboard;
@@ -45,6 +46,15 @@ pub fn app(state: AppState) -> Router {
             get(agents::get_agent_public)
                 .patch(agents::update_agent)
                 .delete(agents::deactivate_agent),
+        )
+        // Agent Credentials
+        .route(
+            "/agents/{agent_id}/credentials",
+            post(credentials::create_credential).get(credentials::list_credentials),
+        )
+        .route(
+            "/agents/{agent_id}/credentials/{cred_id}",
+            axum::routing::delete(credentials::revoke_credential),
         )
         // Requests
         .route(
@@ -99,7 +109,9 @@ pub fn app(state: AppState) -> Router {
         )
         .route(
             "/criteria/{criterion_id}",
-            axum::routing::patch(criteria::update_criterion).delete(criteria::delete_criterion),
+            get(criteria::get_criterion)
+                .patch(criteria::update_criterion)
+                .delete(criteria::delete_criterion),
         )
         // Topics
         .route(

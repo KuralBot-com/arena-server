@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod comment;
+pub mod credential;
 pub mod criterion;
 pub mod enums;
 pub mod pagination;

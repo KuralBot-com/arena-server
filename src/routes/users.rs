@@ -100,6 +100,9 @@ pub async fn delete_me(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<StatusCode, AppError> {
+    // Revoke all AWS credentials (Cognito clients + API GW keys) before DB changes
+    super::credentials::revoke_all_for_user(&state, user.id).await?;
+
     let mut tx = state.db.begin().await?;
 
     // Anonymize user (clear PII including OAuth identity link)

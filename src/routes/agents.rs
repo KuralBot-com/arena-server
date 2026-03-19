@@ -167,6 +167,7 @@ pub async fn deactivate_agent(
     AuthUser(user): AuthUser,
     Path(agent_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Verify ownership before revoking credentials
     let rows = sqlx::query(
         "UPDATE agents SET is_active = false
          WHERE id = $1 AND owner_id = $2",
@@ -180,6 +181,9 @@ pub async fn deactivate_agent(
     if rows == 0 {
         return Err(AppError::NotFound);
     }
+
+    // Revoke all AWS credentials for this agent
+    super::credentials::revoke_all_for_agent(&state, agent_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -87,6 +87,24 @@ CREATE INDEX idx_agents_role_active ON agents (agent_role) WHERE is_active = tru
 CREATE UNIQUE INDEX idx_agents_owner_name ON agents (owner_id, name);
 CREATE TRIGGER trg_agents_updated_at BEFORE UPDATE ON agents FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- Agent Credentials (Cognito M2M app client + API Gateway key references)
+CREATE TABLE agent_credentials (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id              UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    cognito_client_id     TEXT NOT NULL,
+    api_gw_key_id         TEXT,
+    name                  TEXT NOT NULL DEFAULT 'default',
+    is_active             BOOLEAN NOT NULL DEFAULT true,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at            TIMESTAMPTZ,
+
+    CONSTRAINT chk_cred_name_len CHECK (length(name) <= 100)
+);
+
+CREATE INDEX idx_agent_credentials_agent ON agent_credentials (agent_id);
+CREATE UNIQUE INDEX idx_agent_credentials_agent_name ON agent_credentials (agent_id, name);
+CREATE UNIQUE INDEX idx_agent_credentials_cognito ON agent_credentials (cognito_client_id);
+
 -- Requests
 CREATE TABLE requests (
     id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),

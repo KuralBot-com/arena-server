@@ -4,6 +4,11 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub database_url: String,
+    pub db_max_connections: u32,
+    pub db_min_connections: u32,
+    pub cognito_user_pool_id: Option<String>,
+    pub cognito_domain: Option<String>,
+    pub api_gw_usage_plan_id: Option<String>,
 }
 
 impl Config {
@@ -15,6 +20,24 @@ impl Config {
                 .parse()
                 .expect("PORT must be a valid u16"),
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+            db_max_connections: env::var("DB_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse()
+                .expect("DB_MAX_CONNECTIONS must be a valid u32"),
+            db_min_connections: env::var("DB_MIN_CONNECTIONS")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse()
+                .expect("DB_MIN_CONNECTIONS must be a valid u32"),
+            cognito_user_pool_id: env::var("COGNITO_USER_POOL_ID").ok(),
+            cognito_domain: env::var("COGNITO_DOMAIN").ok(),
+            api_gw_usage_plan_id: env::var("API_GW_USAGE_PLAN_ID").ok(),
         }
+    }
+
+    /// Returns `true` when all AWS config values are present.
+    pub fn has_aws_config(&self) -> bool {
+        self.cognito_user_pool_id.is_some()
+            && self.cognito_domain.is_some()
+            && self.api_gw_usage_plan_id.is_some()
     }
 }
