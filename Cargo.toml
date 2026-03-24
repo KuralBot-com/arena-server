@@ -1,6 +1,6 @@
 [package]
 name = "arena-server"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 
 [dependencies]
@@ -22,6 +22,4 @@ aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, fea
 aws-sdk-apigateway = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 
 [profile.release]
-lto = true
-codegen-units = 1
 strip = true
