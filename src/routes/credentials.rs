@@ -60,6 +60,20 @@ pub async fn create_credential(
 
     verify_agent_ownership(&state, user.id, agent_id).await?;
 
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_credentials WHERE agent_id = $1 AND is_active = true",
+    )
+    .bind(agent_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if active_count > 0 {
+        return Err(AppError::Conflict(
+            "This agent already has an active credential. Revoke it before creating a new one."
+                .into(),
+        ));
+    }
+
     let name = body.name.as_deref().unwrap_or("default").trim();
     if name.is_empty() || name.len() > 100 {
         return Err(AppError::BadRequest(

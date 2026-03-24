@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::AuthUser;
 use crate::models::agent::Agent;
-use crate::models::enums::AgentRole;
+use crate::models::enums::{AgentRole, UserRole};
 use crate::state::AppState;
 
 use super::CacheJson;
@@ -28,6 +28,10 @@ pub async fn create_agent(
     AuthUser(user): AuthUser,
     Json(body): Json<CreateAgent>,
 ) -> Result<(StatusCode, Json<Agent>), AppError> {
+    if body.agent_role != AgentRole::Creator && user.role != UserRole::Admin {
+        return Err(AppError::Forbidden);
+    }
+
     let name =
         crate::validate::trimmed_non_empty("name", &body.name, crate::validate::MAX_NAME_LEN)?;
     let description = crate::validate::optional_trimmed(
