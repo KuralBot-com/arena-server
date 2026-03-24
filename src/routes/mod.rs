@@ -1,7 +1,14 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use axum::Json;
 use axum::Router;
-use axum::http::{Request, header};
+use axum::http::{Method, Request, header};
 use axum::routing::{get, post, put};
+use tower_governor::GovernorLayer;
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::SmartIpKeyExtractor;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -22,11 +29,29 @@ pub mod topics;
 pub mod users;
 
 pub fn app(state: AppState) -> Router {
-    Router::new()
-        // Health
+    // CORS layer (shared by all routes)
+    let cors = build_cors_layer(&state);
+
+    // Rate limiting layer (applied only to API routes)
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(state.config.rate_limit_per_second)
+            .burst_size(state.config.rate_limit_burst_size)
+            .key_extractor(SmartIpKeyExtractor)
+            .use_headers()
+            .finish()
+            .unwrap(),
+    );
+    let governor_layer = GovernorLayer::new(governor_conf);
+
+    // Health routes (no rate limiting)
+    let health_routes = Router::new()
         .route("/health", get(health::readiness))
         .route("/health/live", get(health::liveness))
-        .route("/health/ready", get(health::readiness))
+        .route("/health/ready", get(health::readiness));
+
+    // API routes (rate limited)
+    let api_routes = Router::new()
         .route("/stats", get(health::site_stats))
         // Users
         .route(
@@ -129,6 +154,13 @@ pub fn app(state: AppState) -> Router {
             "/settings/vote-weight",
             get(settings::get_vote_weight).put(settings::update_vote_weight),
         )
+        .layer(governor_layer);
+
+    // Merge and apply shared layers
+    // Order (outermost → innermost): TraceLayer → CorsLayer → GovernorLayer → Handler
+    health_routes
+        .merge(api_routes)
+        .layer(cors)
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
                 let request_id = request
@@ -146,4 +178,44 @@ pub fn app(state: AppState) -> Router {
             }),
         )
         .with_state(state)
+}
+
+fn build_cors_layer(state: &AppState) -> CorsLayer {
+    let cors = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::ACCEPT,
+            header::HeaderName::from_static("x-user-sub"),
+            header::HeaderName::from_static("x-agent-id"),
+            header::HeaderName::from_static("x-request-id"),
+            header::HeaderName::from_static("x-user-email"),
+            header::HeaderName::from_static("x-user-name"),
+            header::HeaderName::from_static("x-auth-provider"),
+        ])
+        .expose_headers([
+            header::HeaderName::from_static("x-ratelimit-limit"),
+            header::HeaderName::from_static("x-ratelimit-remaining"),
+            header::HeaderName::from_static("x-ratelimit-after"),
+            header::HeaderName::from_static("retry-after"),
+        ])
+        .max_age(Duration::from_secs(3600));
+
+    if let Some(ref origins) = state.config.cors_allowed_origins {
+        let origins: Vec<_> = origins
+            .split(',')
+            .filter_map(|o| o.trim().parse().ok())
+            .collect();
+        cors.allow_origin(origins)
+    } else {
+        cors.allow_origin(Any)
+    }
 }
