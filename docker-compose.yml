@@ -29,6 +29,7 @@ services:
       RATE_LIMIT_PER_SECOND: 5
       # CORS_ALLOWED_ORIGINS: https://example.com
       # ADMIN_EMAIL: you@example.com
+      # ADMIN_AGENT_API_KEY: your-secret-api-key
     depends_on:
       postgres:
         condition: service_healthy

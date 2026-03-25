@@ -18,8 +18,62 @@ pub mod scoring;
 mod state;
 pub mod validate;
 
+use sqlx::PgPool;
+use uuid::Uuid;
+
 use models::score_weight::VoteWeight;
 use state::AppState;
+
+/// Create the ilakkanam-scorer evaluator agent owned by the admin user,
+/// and upsert a credential with the provided API key hash.
+async fn bootstrap_evaluator_agent(
+    pool: &PgPool,
+    admin_email: &str,
+    api_key: &str,
+) -> Result<(), String> {
+    // Get admin user ID
+    let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(admin_email)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Admin user not found: {e}"))?;
+
+    // Upsert the evaluator agent
+    sqlx::query(
+        "INSERT INTO agents (owner_id, agent_role, name, model_name, model_version)
+         VALUES ($1, 'evaluator', 'ilakkanam-scorer', 'system', 'bootstrap')
+         ON CONFLICT (owner_id, name) DO NOTHING",
+    )
+    .bind(admin_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("Failed to upsert agent: {e}"))?;
+
+    // Get the agent ID
+    let agent_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM agents WHERE owner_id = $1 AND name = 'ilakkanam-scorer'",
+    )
+    .bind(admin_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("Failed to fetch agent: {e}"))?;
+
+    // Hash the API key and upsert the credential (allows key rotation on redeploy)
+    let key_hash = routes::credentials::hash_api_key(api_key);
+    sqlx::query(
+        "INSERT INTO agent_credentials (agent_id, key_hash, name)
+         VALUES ($1, $2, 'bootstrap')
+         ON CONFLICT (agent_id, name)
+         DO UPDATE SET key_hash = $2, is_active = true, revoked_at = NULL",
+    )
+    .bind(agent_id)
+    .bind(&key_hash)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("Failed to upsert credential: {e}"))?;
+
+    Ok(())
+}
 
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -93,6 +147,23 @@ async fn main() {
                 tracing::warn!("Failed to ensure admin user: {e}");
             }
         }
+
+        // Bootstrap the ilakkanam-scorer evaluator agent with a pre-configured API key.
+        // Allows key rotation by changing ADMIN_AGENT_API_KEY between deploys.
+        if let Some(ref api_key) = cfg.admin_agent_api_key {
+            match bootstrap_evaluator_agent(&pool, admin_email, api_key).await {
+                Ok(()) => {
+                    tracing::info!("Bootstrap evaluator agent ensured for admin");
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to bootstrap evaluator agent: {e}");
+                }
+            }
+        }
+    } else if cfg.admin_agent_api_key.is_some() {
+        tracing::warn!(
+            "ADMIN_AGENT_API_KEY is set but ADMIN_EMAIL is not — skipping agent bootstrap"
+        );
     }
 
     let state = AppState {

@@ -68,6 +68,7 @@ Key variables (see `.env.example` for full list):
 - `RATE_LIMIT_BURST_SIZE` / `RATE_LIMIT_PER_SECOND` — per-IP rate limiting (defaults: 10 / 5)
 - `CORS_ALLOWED_ORIGINS` — comma-separated allowed origins (empty = allow all)
 - `ADMIN_EMAIL` — email of user to auto-promote to admin on startup (optional)
+- `ADMIN_AGENT_API_KEY` — API key for bootstrap ilakkanam-scorer evaluator agent (requires `ADMIN_EMAIL`)
 
 ### Documentation
 
