@@ -6,8 +6,10 @@ use axum::Router;
 use axum::http::{Method, Request, header};
 use axum::routing::{get, post, put};
 use tower_governor::GovernorLayer;
-use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::governor::{GovernorConfig, GovernorConfigBuilder};
 use tower_governor::key_extractor::SmartIpKeyExtractor;
+
+pub use governor::middleware::StateInformationMiddleware;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -28,12 +30,10 @@ pub mod settings;
 pub mod topics;
 pub mod users;
 
-pub fn app(state: AppState) -> Router {
-    // CORS layer (shared by all routes)
-    let cors = build_cors_layer(&state);
-
-    // Rate limiting layer (applied only to API routes)
-    let governor_conf = Arc::new(
+pub fn build_governor_config(
+    state: &AppState,
+) -> Arc<GovernorConfig<SmartIpKeyExtractor, StateInformationMiddleware>> {
+    Arc::new(
         GovernorConfigBuilder::default()
             .per_second(state.config.rate_limit_per_second)
             .burst_size(state.config.rate_limit_burst_size)
@@ -41,7 +41,17 @@ pub fn app(state: AppState) -> Router {
             .use_headers()
             .finish()
             .unwrap(),
-    );
+    )
+}
+
+pub fn app(
+    state: AppState,
+    governor_conf: Arc<GovernorConfig<SmartIpKeyExtractor, StateInformationMiddleware>>,
+) -> Router {
+    // CORS layer (shared by all routes)
+    let cors = build_cors_layer(&state);
+
+    // Rate limiting layer (applied only to API routes)
     let governor_layer = GovernorLayer::new(governor_conf);
 
     // Health routes (no rate limiting)

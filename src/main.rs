@@ -201,7 +201,30 @@ async fn main() {
     let addr = format!("{}:{}", state.config.host, state.config.port);
     tracing::info!("Starting server on {}", addr);
 
-    let app = routes::app(state);
+    // Build governor config and spawn rate-limiter cleanup task
+    let governor_conf = routes::build_governor_config(&state);
+    let limiter = governor_conf.limiter().clone();
+    let cleanup_interval_secs = state.config.rate_limit_cleanup_secs;
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(cleanup_interval_secs));
+        loop {
+            interval.tick().await;
+            let before = limiter.len();
+            limiter.retain_recent();
+            limiter.shrink_to_fit();
+            let after = limiter.len();
+            if before != after {
+                tracing::debug!(
+                    "Rate limiter cleanup: {} → {} keys",
+                    before,
+                    after
+                );
+            }
+        }
+    });
+
+    let app = routes::app(state, governor_conf);
     let listener = TcpListener::bind(&addr).await.unwrap();
     axum::serve(
         listener,

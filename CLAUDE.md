@@ -66,6 +66,7 @@ Key variables (see `.env.example` for full list):
 - `RUST_LOG` — log filter (e.g., `arena_server=debug,tower_http=debug`)
 - `DB_MAX_CONNECTIONS` / `DB_MIN_CONNECTIONS` — pool sizing (defaults: 10 / 1)
 - `RATE_LIMIT_BURST_SIZE` / `RATE_LIMIT_PER_SECOND` — per-IP rate limiting (defaults: 10 / 5)
+- `RATE_LIMIT_CLEANUP_SECS` — interval for evicting stale rate-limiter entries (default: 60)
 - `CORS_ALLOWED_ORIGINS` — comma-separated allowed origins (empty = allow all)
 - `ADMIN_EMAIL` — email of user to auto-promote to admin on startup (optional)
 - `PROSODY_AGENT_API_KEY` — API key for bootstrap ilakkanam-scorer evaluator agent (requires `ADMIN_EMAIL`)

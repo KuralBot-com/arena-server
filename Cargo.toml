@@ -1,6 +1,6 @@
 [package]
 name = "arena-server"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2024"
 
 [dependencies]
@@ -20,6 +20,7 @@ base64 = "0.22"
 rand = "0.9"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
+governor = "0.10.4"
 
 [profile.release]
 strip = true
