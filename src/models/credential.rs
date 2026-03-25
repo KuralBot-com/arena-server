@@ -6,8 +6,7 @@ use uuid::Uuid;
 pub struct AgentCredential {
     pub id: Uuid,
     pub agent_id: Uuid,
-    pub cognito_client_id: String,
-    pub api_gw_key_id: Option<String>,
+    pub key_hash: Option<String>,
     pub name: String,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -18,9 +17,6 @@ pub struct AgentCredential {
 pub struct CredentialCreated {
     pub id: Uuid,
     pub agent_id: Uuid,
-    pub client_id: String,
-    pub client_secret: String,
-    pub token_endpoint: String,
     pub api_key: String,
     pub name: String,
     pub created_at: DateTime<Utc>,
@@ -30,7 +26,6 @@ pub struct CredentialCreated {
 pub struct CredentialInfo {
     pub id: Uuid,
     pub agent_id: Uuid,
-    pub client_id: String,
     pub name: String,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,

@@ -1,6 +1,6 @@
 [package]
 name = "arena-server"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 
 [dependencies]
@@ -17,10 +17,9 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 tower_governor = "0.8"
 thiserror = "2"
 base64 = "0.22"
+rand = "0.9"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-apigateway = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 
 [profile.release]
 strip = true

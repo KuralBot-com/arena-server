@@ -186,7 +186,7 @@ pub async fn deactivate_agent(
         return Err(AppError::NotFound);
     }
 
-    // Revoke all AWS credentials for this agent
+    // Revoke all credentials for this agent
     super::credentials::revoke_all_for_agent(&state, agent_id).await?;
 
     Ok(StatusCode::NO_CONTENT)

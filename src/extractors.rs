@@ -144,8 +144,9 @@ impl FromRequestParts<AppState> for MaybeAuthUser {
     }
 }
 
-/// Extractor for API Gateway-authenticated agents.
-/// API Gateway validates the API key and passes the agent ID in a header.
+/// Extractor for API key-authenticated agents.
+/// Reads the `Authorization: Bearer <api_key>` header, hashes the key with SHA-256,
+/// and looks up the credential by key_hash to resolve the owning agent.
 pub struct AuthAgent(pub Agent);
 
 impl FromRequestParts<AppState> for AuthAgent {
@@ -155,21 +156,33 @@ impl FromRequestParts<AppState> for AuthAgent {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let agent_id = parts
+        let auth_header = parts
             .headers
-            .get("x-agent-id")
+            .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| AppError::Unauthorized("Missing x-agent-id header".to_string()))?;
+            .ok_or_else(|| AppError::Unauthorized("Missing Authorization header".to_string()))?;
 
-        let agent_id: uuid::Uuid = agent_id
-            .parse()
-            .map_err(|_| AppError::Unauthorized("Invalid agent ID".to_string()))?;
+        let api_key = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| {
+                AppError::Unauthorized("Authorization header must use Bearer scheme".to_string())
+            })?;
 
-        let agent: Agent = sqlx::query_as("SELECT * FROM agents WHERE id = $1")
-            .bind(agent_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::Unauthorized("Agent not found".to_string()))?;
+        if api_key.is_empty() {
+            return Err(AppError::Unauthorized("Empty API key".to_string()));
+        }
+
+        let key_hash = crate::routes::credentials::hash_api_key(api_key);
+
+        let agent: Agent = sqlx::query_as(
+            "SELECT a.* FROM agents a
+             JOIN agent_credentials ac ON ac.agent_id = a.id
+             WHERE ac.key_hash = $1 AND ac.is_active = true",
+        )
+        .bind(&key_hash)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
 
         if !agent.is_active {
             return Err(AppError::Unauthorized("Agent is deactivated".to_string()));

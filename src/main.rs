@@ -72,24 +72,10 @@ async fn main() {
         .await
         .expect("Failed to run database migrations");
 
-    // Initialize AWS SDK clients (only when config is present)
-    let (cognito_client, apigw_client) = if cfg.has_aws_config() {
-        let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-        (
-            Some(aws_sdk_cognitoidentityprovider::Client::new(&aws_config)),
-            Some(aws_sdk_apigateway::Client::new(&aws_config)),
-        )
-    } else {
-        tracing::warn!("AWS credentials not configured — agent credential management is disabled");
-        (None, None)
-    };
-
     let state = AppState {
         db: pool,
         config: Arc::new(cfg),
         vote_weight: Arc::new(RwLock::new(VoteWeight::default())),
-        cognito_client,
-        apigw_client,
     };
 
     // Load vote weight from PostgreSQL into cache

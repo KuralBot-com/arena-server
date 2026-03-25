@@ -195,7 +195,6 @@ fn build_cors_layer(state: &AppState) -> CorsLayer {
             header::AUTHORIZATION,
             header::ACCEPT,
             header::HeaderName::from_static("x-user-sub"),
-            header::HeaderName::from_static("x-agent-id"),
             header::HeaderName::from_static("x-request-id"),
             header::HeaderName::from_static("x-user-email"),
             header::HeaderName::from_static("x-user-name"),
