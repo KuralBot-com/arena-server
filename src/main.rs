@@ -24,11 +24,12 @@ use uuid::Uuid;
 use models::score_weight::VoteWeight;
 use state::AppState;
 
-/// Create the ilakkanam-scorer evaluator agent owned by the admin user,
+/// Create an evaluator agent owned by the admin user,
 /// and upsert a credential with the provided API key hash.
 async fn bootstrap_evaluator_agent(
     pool: &PgPool,
     admin_email: &str,
+    agent_name: &str,
     api_key: &str,
 ) -> Result<(), String> {
     // Get admin user ID
@@ -41,22 +42,23 @@ async fn bootstrap_evaluator_agent(
     // Upsert the evaluator agent
     sqlx::query(
         "INSERT INTO agents (owner_id, agent_role, name, model_name, model_version)
-         VALUES ($1, 'evaluator', 'ilakkanam-scorer', 'system', 'bootstrap')
+         VALUES ($1, 'evaluator', $2, 'system', 'bootstrap')
          ON CONFLICT (owner_id, name) DO NOTHING",
     )
     .bind(admin_id)
+    .bind(agent_name)
     .execute(pool)
     .await
     .map_err(|e| format!("Failed to upsert agent: {e}"))?;
 
     // Get the agent ID
-    let agent_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM agents WHERE owner_id = $1 AND name = 'ilakkanam-scorer'",
-    )
-    .bind(admin_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("Failed to fetch agent: {e}"))?;
+    let agent_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM agents WHERE owner_id = $1 AND name = $2")
+            .bind(admin_id)
+            .bind(agent_name)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch agent: {e}"))?;
 
     // Hash the API key and upsert the credential (allows key rotation on redeploy)
     let key_hash = routes::credentials::hash_api_key(api_key);
@@ -148,21 +150,26 @@ async fn main() {
             }
         }
 
-        // Bootstrap the ilakkanam-scorer evaluator agent with a pre-configured API key.
-        // Allows key rotation by changing ADMIN_AGENT_API_KEY between deploys.
-        if let Some(ref api_key) = cfg.admin_agent_api_key {
-            match bootstrap_evaluator_agent(&pool, admin_email, api_key).await {
-                Ok(()) => {
-                    tracing::info!("Bootstrap evaluator agent ensured for admin");
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to bootstrap evaluator agent: {e}");
+        // Bootstrap evaluator agents with pre-configured API keys.
+        // Allows key rotation by changing the env vars between deploys.
+        for (_env_name, agent_name, api_key) in [
+            ("PROSODY_AGENT_API_KEY", "ilakkanam-scorer", cfg.prosody_agent_api_key.as_deref()),
+            ("MEANING_AGENT_API_KEY", "meaning-scorer", cfg.meaning_agent_api_key.as_deref()),
+        ] {
+            if let Some(api_key) = api_key {
+                match bootstrap_evaluator_agent(&pool, admin_email, agent_name, api_key).await {
+                    Ok(()) => {
+                        tracing::info!("Bootstrap evaluator agent '{agent_name}' ensured for admin");
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to bootstrap evaluator agent '{agent_name}': {e}");
+                    }
                 }
             }
         }
-    } else if cfg.admin_agent_api_key.is_some() {
+    } else if cfg.prosody_agent_api_key.is_some() || cfg.meaning_agent_api_key.is_some() {
         tracing::warn!(
-            "ADMIN_AGENT_API_KEY is set but ADMIN_EMAIL is not — skipping agent bootstrap"
+            "Agent API key(s) set but ADMIN_EMAIL is not — skipping agent bootstrap"
         );
     }
 

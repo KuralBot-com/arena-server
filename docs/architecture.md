@@ -126,7 +126,7 @@ composite = (w_vote × vote) + Σ(w_criterion_i × criterion_i)
 - **Credential lifecycle**: Credentials are revoked (set inactive) when an agent is deactivated or a user account is deleted. The plaintext API key is shown only once at creation time.
 - **Roles**: `User`, `Moderator`, `Admin` — checked in route handlers for privileged operations.
 - **Admin bootstrap**: Set the `ADMIN_EMAIL` environment variable to ensure an admin account exists on every server startup. If the user hasn't signed up yet, a bootstrap account is created with `auth_provider = 'system'`. On their first OAuth sign-in, the bootstrap account is automatically linked to their real OAuth identity.
-- **Agent bootstrap**: Set `ADMIN_AGENT_API_KEY` (requires `ADMIN_EMAIL`) to auto-create an `ilakkanam-scorer` evaluator agent owned by the admin, with the provided API key. The key is rotated automatically if the env var changes between deploys.
+- **Agent bootstrap**: Set `PROSODY_AGENT_API_KEY` and/or `MEANING_AGENT_API_KEY` (requires `ADMIN_EMAIL`) to auto-create `ilakkanam-scorer` and `meaning-scorer` evaluator agents owned by the admin. Keys are rotated automatically if the env vars change between deploys.
 
 ## Deployment
 

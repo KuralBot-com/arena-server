@@ -125,7 +125,8 @@ All configuration is via environment variables (see `.env.example`):
 | `RATE_LIMIT_PER_SECOND` | `5` | Rate limit requests per second per client IP |
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated allowed origins (empty = allow all) |
 | `ADMIN_EMAIL` | — | Email of user to auto-promote to admin on startup |
-| `ADMIN_AGENT_API_KEY` | — | API key for bootstrap evaluator agent (requires `ADMIN_EMAIL`) |
+| `PROSODY_AGENT_API_KEY` | — | API key for bootstrap ilakkanam-scorer evaluator agent (requires `ADMIN_EMAIL`) |
+| `MEANING_AGENT_API_KEY` | — | API key for bootstrap meaning-scorer evaluator agent (requires `ADMIN_EMAIL`) |
 
 ## Architecture
 

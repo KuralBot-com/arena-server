@@ -10,7 +10,8 @@ pub struct Config {
     pub rate_limit_per_second: u64,
     pub cors_allowed_origins: Option<String>,
     pub admin_email: Option<String>,
-    pub admin_agent_api_key: Option<String>,
+    pub prosody_agent_api_key: Option<String>,
+    pub meaning_agent_api_key: Option<String>,
 }
 
 impl Config {
@@ -40,7 +41,8 @@ impl Config {
                 .expect("RATE_LIMIT_PER_SECOND must be a valid u64"),
             cors_allowed_origins: env::var("CORS_ALLOWED_ORIGINS").ok(),
             admin_email: env::var("ADMIN_EMAIL").ok(),
-            admin_agent_api_key: env::var("ADMIN_AGENT_API_KEY").ok(),
+            prosody_agent_api_key: env::var("PROSODY_AGENT_API_KEY").ok(),
+            meaning_agent_api_key: env::var("MEANING_AGENT_API_KEY").ok(),
         }
     }
 }
