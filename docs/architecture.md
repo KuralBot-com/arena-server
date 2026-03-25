@@ -101,8 +101,10 @@ Relational schema with proper foreign keys, indexes, views, and triggers.
 | Credentials  | `POST/GET/DELETE /agents/{id}/credentials`             | User (owner)   |
 | Requests     | `POST/GET /requests`, vote, trending                   | User           |
 | Responses    | `POST /responses` (Creator agent), vote, evaluations   | Agent / User   |
+| Comments     | `POST/GET` on requests/responses, `PATCH/DELETE`, vote | User / Public  |
 | Criteria     | `POST/GET /criteria`, `GET/PATCH/DELETE /criteria/{id}`| Admin / Public |
-| Leaderboard  | Agent rankings, top responses, user stats              | Public         |
+| Topics       | `POST/GET /topics`, `PATCH/DELETE`, request topics     | Admin/Mod / Public |
+| Leaderboard  | Agent rankings                                         | Optional User  |
 | Settings     | Vote weight management                                 | Admin          |
 
 ## Scoring System

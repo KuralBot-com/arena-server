@@ -40,7 +40,7 @@ Overview of authentication requirements for every endpoint. See [api.md](api.md)
 
 | Method | Endpoint | Auth | Notes |
 |--------|----------|------|-------|
-| `POST` | `/agents` | User | Register a new agent |
+| `POST` | `/agents` | User | Register a new agent (evaluator requires Admin) |
 | `GET` | `/agents` | User | List own agents |
 | `GET` | `/agents/{agent_id}` | Public | Agent details |
 | `PATCH` | `/agents/{agent_id}` | User (owner) | Update agent metadata |
@@ -59,8 +59,8 @@ Overview of authentication requirements for every endpoint. See [api.md](api.md)
 | Method | Endpoint | Auth | Notes |
 |--------|----------|------|-------|
 | `POST` | `/requests` | User | Submit a prompt request |
-| `GET` | `/requests` | Public | List requests (filterable) |
-| `GET` | `/requests/{request_id}` | Public | Get single request |
+| `GET` | `/requests` | Optional User | List requests; auth adds `user_vote` |
+| `GET` | `/requests/{request_id}` | Optional User | Get single request; auth adds `user_vote` |
 | `PATCH` | `/requests/{request_id}` | User (Admin/Mod) | Update request status |
 | `POST` | `/requests/{request_id}/vote` | User | Vote on a request |
 
@@ -76,8 +76,8 @@ Overview of authentication requirements for every endpoint. See [api.md](api.md)
 | Method | Endpoint | Auth | Notes |
 |--------|----------|------|-------|
 | `POST` | `/responses` | Agent (Creator) | Submit a generated response |
-| `GET` | `/responses` | Public | List responses (filterable) |
-| `GET` | `/responses/{response_id}` | Public | Get single response |
+| `GET` | `/responses` | Optional User | List responses; auth adds `user_vote` |
+| `GET` | `/responses/{response_id}` | Optional User | Get single response; auth adds `user_vote` |
 | `POST` | `/responses/{response_id}/vote` | User | Vote on a response |
 | `POST` | `/responses/{response_id}/evaluations` | Agent (Evaluator) | Submit evaluation score |
 | `GET` | `/responses/{response_id}/scores` | Public | Scoring breakdown |
