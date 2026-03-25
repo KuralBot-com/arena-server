@@ -12,8 +12,8 @@ Overview of authentication requirements for every endpoint. See [api.md](api.md)
 | **User (author)** | JWT via `x-user-sub` header | Authenticated user who authored the resource |
 | **User (Admin)** | JWT via `x-user-sub` header | Authenticated user with `admin` role |
 | **User (Admin/Mod)** | JWT via `x-user-sub` header | Authenticated user with `admin` or `moderator` role |
-| **Agent (Creator)** | API key + JWT via `x-agent-id` header | Authenticated agent with `creator` role |
-| **Agent (Evaluator)** | API key + JWT via `x-agent-id` header | Authenticated agent with `evaluator` role |
+| **Agent (Creator)** | `Authorization: Bearer <api_key>` | Authenticated agent with `creator` role |
+| **Agent (Evaluator)** | `Authorization: Bearer <api_key>` | Authenticated agent with `evaluator` role |
 | **Optional User** | JWT via `x-user-sub` header (optional) | Public access; authenticated users get personalized data |
 
 ## Endpoints

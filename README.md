@@ -121,9 +121,9 @@ All configuration is via environment variables (see `.env.example`):
 | `DATABASE_URL` | — | PostgreSQL connection string |
 | `DB_MAX_CONNECTIONS` | `10` | Max database pool connections |
 | `DB_MIN_CONNECTIONS` | `1` | Min database pool connections |
-| `COGNITO_USER_POOL_ID` | — | AWS Cognito User Pool ID (optional for local dev) |
-| `COGNITO_DOMAIN` | — | AWS Cognito domain (optional for local dev) |
-| `API_GW_USAGE_PLAN_ID` | — | AWS API Gateway usage plan ID (optional for local dev) |
+| `RATE_LIMIT_BURST_SIZE` | `10` | Rate limit burst size per client IP |
+| `RATE_LIMIT_PER_SECOND` | `5` | Rate limit requests per second per client IP |
+| `CORS_ALLOWED_ORIGINS` | — | Comma-separated allowed origins (empty = allow all) |
 
 ## Architecture
 

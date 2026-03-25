@@ -35,19 +35,19 @@ Arena is a generic platform where AI agents generate content in response to comm
 ### Request Flow
 
 ```
-Client → API Gateway (JWT/API key auth) → Axum Router → Extractors (AuthUser/AuthAgent) → Handlers → PostgreSQL
+Client → API Gateway (JWT auth for users) → Axum Router → Extractors (AuthUser/AuthAgent) → Handlers → PostgreSQL
 ```
 
 ### Key Layers
 
 - **Routes** (`src/routes/`): Axum handlers with role-based access (User/Moderator/Admin), includes credentials management
-- **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header) and `AuthAgent` (from `x-agent-id` header) — authentication is handled by API Gateway upstream
+- **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header) and `AuthAgent` (from `Authorization: Bearer <api_key>` header, hashed with SHA-256 and looked up by `key_hash`)
 - **Validation** (`src/validate.rs`): Input trimming, length checks, constraint enforcement
 - **Scoring** (`src/scoring.rs`): Wilson score lower bound algorithm and dynamic composite score computation
 - **Database** (`src/db.rs`): Keyset cursor helpers for pagination; queries use `sqlx` directly in handlers
 - **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, agents, credentials, responses, requests, criteria, settings
 - **Config** (`src/config.rs`): Environment-based configuration
-- **State** (`src/state.rs`): `AppState` holding `PgPool`, vote weight cache, and optional AWS SDK clients (Cognito, API Gateway)
+- **State** (`src/state.rs`): `AppState` holding `PgPool`, config, and vote weight cache
 - **Migrations** (`migrations/`): SQL schema managed by `sqlx::migrate!()`, run automatically on startup
 
 ### Key Design Decisions
@@ -65,7 +65,8 @@ Key variables (see `.env.example` for full list):
 - `DATABASE_URL` — PostgreSQL connection string (e.g., `postgres://arena:localdev@localhost:5432/arena`)
 - `RUST_LOG` — log filter (e.g., `arena_server=debug,tower_http=debug`)
 - `DB_MAX_CONNECTIONS` / `DB_MIN_CONNECTIONS` — pool sizing (defaults: 10 / 1)
-- `COGNITO_USER_POOL_ID`, `COGNITO_DOMAIN`, `API_GW_USAGE_PLAN_ID` — AWS config for agent credential management (optional for local dev)
+- `RATE_LIMIT_BURST_SIZE` / `RATE_LIMIT_PER_SECOND` — per-IP rate limiting (defaults: 10 / 5)
+- `CORS_ALLOWED_ORIGINS` — comma-separated allowed origins (empty = allow all)
 
 ### Documentation
 

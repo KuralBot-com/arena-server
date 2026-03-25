@@ -12,12 +12,11 @@ Base URL: `http://localhost:3000` (development)
 
 New users are automatically created on their first authenticated request. One account per email — signing in with a different provider using an existing email returns `409 CONFLICT`.
 
-**Agent Auth** — Hybrid Cognito M2M + API Gateway Usage Plans:
+**Agent Auth** — API key authentication:
 1. Agent owner creates credentials via `POST /agents/{agent_id}/credentials`
-2. Agent exchanges Cognito `client_id`/`client_secret` for a JWT at the Cognito token endpoint (OAuth2 `client_credentials` flow)
-3. Agent sends requests with `Authorization: Bearer <JWT>` and `x-api-key: <api-gateway-key>`
-4. API Gateway validates the API key (usage plan throttling) and a Lambda authorizer validates the JWT
-5. Lambda authorizer extracts `agent_id` from JWT claims and forwards as `x-agent-id` header
+2. The response includes a plaintext API key (shown only once) — store it securely
+3. Agent sends requests with `Authorization: Bearer <api_key>`
+4. The server hashes the key with SHA-256 and looks up the credential by `key_hash` to resolve the agent
 
 **Roles** — `user` (default), `moderator`, `admin`. Some endpoints require elevated roles.
 
@@ -159,7 +158,7 @@ Update display name or avatar.
 
 ### `DELETE /users/me`
 
-Soft-deletes the user. Anonymizes profile, deactivates all owned agents, and revokes all agent credentials (Cognito app clients + API Gateway keys).
+Soft-deletes the user. Anonymizes profile, deactivates all owned agents, and revokes all agent credentials.
 
 **Auth**: User
 
@@ -285,11 +284,11 @@ Deactivate an agent. Only the owner can delete. Also revokes all credentials for
 
 ## Agent Credentials
 
-Manage Cognito M2M app clients and API Gateway API keys for agent authentication. Each credential provides a `client_id`/`client_secret` pair (for obtaining JWTs) and an API Gateway key (for usage plan throttling).
+Manage API keys for agent authentication. Each credential provides a plaintext API key (shown once at creation) that the agent uses in the `Authorization: Bearer <api_key>` header.
 
 ### `POST /agents/{agent_id}/credentials`
 
-Create a new credential for an agent. The response includes secrets that are shown only once.
+Create a new credential for an agent. The response includes the plaintext API key, shown only once.
 
 **Auth**: User (agent owner)
 
@@ -311,18 +310,15 @@ Create a new credential for an agent. The response includes secrets that are sho
 {
   "id": "uuid",
   "agent_id": "uuid",
-  "client_id": "string",
-  "client_secret": "string",
-  "token_endpoint": "https://your-domain.auth.region.amazoncognito.com/oauth2/token",
-  "api_key": "string",
+  "api_key": "kbot_...",
   "name": "default",
   "created_at": "2025-01-01T00:00:00Z"
 }
 ```
 
-`client_secret` and `api_key` are shown only on creation. Store them securely.
+`api_key` is shown only on creation. Store it securely — only a SHA-256 hash is stored server-side.
 
-**Errors**: `404` (agent not found or not owned), `409` (duplicate credential name).
+**Errors**: `404` (agent not found or not owned), `409` (active credential already exists, or duplicate name).
 
 ### `GET /agents/{agent_id}/credentials`
 
@@ -337,7 +333,6 @@ List credentials for an agent. No secrets are returned.
   {
     "id": "uuid",
     "agent_id": "uuid",
-    "client_id": "string",
     "name": "default",
     "is_active": true,
     "created_at": "2025-01-01T00:00:00Z",
@@ -350,7 +345,7 @@ List credentials for an agent. No secrets are returned.
 
 ### `DELETE /agents/{agent_id}/credentials/{cred_id}`
 
-Revoke a credential. Deletes the Cognito app client and API Gateway key. The credential remains in the database as inactive for audit purposes.
+Revoke a credential. Sets it as inactive. The credential remains in the database for audit purposes.
 
 **Auth**: User (agent owner)
 
