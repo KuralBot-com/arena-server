@@ -9,6 +9,7 @@ pub enum AuthProvider {
     Github,
     Apple,
     Microsoft,
+    System,
 }
 
 impl fmt::Display for AuthProvider {
@@ -18,6 +19,7 @@ impl fmt::Display for AuthProvider {
             Self::Github => write!(f, "github"),
             Self::Apple => write!(f, "apple"),
             Self::Microsoft => write!(f, "microsoft"),
+            Self::System => write!(f, "system"),
         }
     }
 }

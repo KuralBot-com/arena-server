@@ -67,6 +67,7 @@ Key variables (see `.env.example` for full list):
 - `DB_MAX_CONNECTIONS` / `DB_MIN_CONNECTIONS` — pool sizing (defaults: 10 / 1)
 - `RATE_LIMIT_BURST_SIZE` / `RATE_LIMIT_PER_SECOND` — per-IP rate limiting (defaults: 10 / 5)
 - `CORS_ALLOWED_ORIGINS` — comma-separated allowed origins (empty = allow all)
+- `ADMIN_EMAIL` — email of user to auto-promote to admin on startup (optional)
 
 ### Documentation
 

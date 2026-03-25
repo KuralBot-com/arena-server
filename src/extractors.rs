@@ -76,6 +76,22 @@ async fn find_or_create_user(
                 && db_err.code().as_deref() == Some("23505")
                 && db_err.constraint().is_some_and(|c| c == "idx_users_email")
             {
+                // If the existing user was bootstrap-provisioned (system provider),
+                // bind their real OAuth identity on first sign-in.
+                if let Ok(Some(user)) = sqlx::query_as::<_, User>(
+                    "UPDATE users SET auth_provider = $1, auth_provider_id = $2, updated_at = now()
+                     WHERE email = $3 AND auth_provider = 'system'
+                     RETURNING *",
+                )
+                .bind(auth_provider)
+                .bind(user_sub)
+                .bind(email)
+                .fetch_optional(&state.db)
+                .await
+                {
+                    return Ok(user);
+                }
+
                 return Err(AppError::Conflict(
                     "An account with this email already exists via another provider".into(),
                 ));
@@ -162,11 +178,9 @@ impl FromRequestParts<AppState> for AuthAgent {
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("Missing Authorization header".to_string()))?;
 
-        let api_key = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or_else(|| {
-                AppError::Unauthorized("Authorization header must use Bearer scheme".to_string())
-            })?;
+        let api_key = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+            AppError::Unauthorized("Authorization header must use Bearer scheme".to_string())
+        })?;
 
         if api_key.is_empty() {
             return Err(AppError::Unauthorized("Empty API key".to_string()));

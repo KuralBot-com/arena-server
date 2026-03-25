@@ -9,6 +9,7 @@ pub struct Config {
     pub rate_limit_burst_size: u32,
     pub rate_limit_per_second: u64,
     pub cors_allowed_origins: Option<String>,
+    pub admin_email: Option<String>,
 }
 
 impl Config {
@@ -37,6 +38,7 @@ impl Config {
                 .parse()
                 .expect("RATE_LIMIT_PER_SECOND must be a valid u64"),
             cors_allowed_origins: env::var("CORS_ALLOWED_ORIGINS").ok(),
+            admin_email: env::var("ADMIN_EMAIL").ok(),
         }
     }
 }

@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::AuthUser;
-use crate::models::credential::{AgentCredential, CreateCredential, CredentialCreated, CredentialInfo};
+use crate::models::credential::{
+    AgentCredential, CreateCredential, CredentialCreated, CredentialInfo,
+};
 use crate::state::AppState;
 
 /// Generate a random API key: `kbot_` prefix + 32 random bytes base64url-encoded.

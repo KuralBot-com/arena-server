@@ -72,6 +72,29 @@ async fn main() {
         .await
         .expect("Failed to run database migrations");
 
+    // Ensure admin user exists if ADMIN_EMAIL is configured.
+    // Creates a bootstrap user with auth_provider='system' if they haven't signed up yet.
+    // On first OAuth sign-in, the extractor will bind their real provider identity.
+    if let Some(ref admin_email) = cfg.admin_email {
+        let result = sqlx::query(
+            "INSERT INTO users (display_name, email, auth_provider, auth_provider_id, role)
+             VALUES ('Admin', $1, 'system', 'bootstrap', 'admin')
+             ON CONFLICT (email) DO UPDATE SET role = 'admin', updated_at = now()",
+        )
+        .bind(admin_email)
+        .execute(&pool)
+        .await;
+
+        match result {
+            Ok(_) => {
+                tracing::info!("Admin user ensured for email {}", admin_email);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to ensure admin user: {e}");
+            }
+        }
+    }
+
     let state = AppState {
         db: pool,
         config: Arc::new(cfg),
