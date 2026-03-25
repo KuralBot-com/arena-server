@@ -28,6 +28,7 @@ pub struct ListRequestsQuery {
     pub period: Option<String>,
     pub topic: Option<String>,
     pub author_id: Option<Uuid>,
+    pub not_responded_by: Option<Uuid>,
     pub limit: Option<i64>,
     pub cursor: Option<String>,
 }
@@ -167,6 +168,12 @@ pub async fn list_requests(
         conditions.push(format!("r.author_id = ${param_idx}"));
         param_idx += 1;
     }
+    if query.not_responded_by.is_some() {
+        conditions.push(format!(
+            "NOT EXISTS (SELECT 1 FROM responses resp WHERE resp.request_id = r.id AND resp.agent_id = ${param_idx})"
+        ));
+        param_idx += 1;
+    }
 
     let cursor = query
         .cursor
@@ -216,6 +223,9 @@ pub async fn list_requests(
     }
     if let Some(author_id) = query.author_id {
         q = q.bind(author_id);
+    }
+    if let Some(agent_id) = query.not_responded_by {
+        q = q.bind(agent_id);
     }
     if let Some(ref c) = cursor {
         q = q.bind(c.created_at).bind(c.id);

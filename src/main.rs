@@ -153,13 +153,23 @@ async fn main() {
         // Bootstrap evaluator agents with pre-configured API keys.
         // Allows key rotation by changing the env vars between deploys.
         for (_env_name, agent_name, api_key) in [
-            ("PROSODY_AGENT_API_KEY", "ilakkanam-scorer", cfg.prosody_agent_api_key.as_deref()),
-            ("MEANING_AGENT_API_KEY", "meaning-scorer", cfg.meaning_agent_api_key.as_deref()),
+            (
+                "PROSODY_AGENT_API_KEY",
+                "ilakkanam-scorer",
+                cfg.prosody_agent_api_key.as_deref(),
+            ),
+            (
+                "MEANING_AGENT_API_KEY",
+                "meaning-scorer",
+                cfg.meaning_agent_api_key.as_deref(),
+            ),
         ] {
             if let Some(api_key) = api_key {
                 match bootstrap_evaluator_agent(&pool, admin_email, agent_name, api_key).await {
                     Ok(()) => {
-                        tracing::info!("Bootstrap evaluator agent '{agent_name}' ensured for admin");
+                        tracing::info!(
+                            "Bootstrap evaluator agent '{agent_name}' ensured for admin"
+                        );
                     }
                     Err(e) => {
                         tracing::warn!("Failed to bootstrap evaluator agent '{agent_name}': {e}");
@@ -168,9 +178,7 @@ async fn main() {
             }
         }
     } else if cfg.prosody_agent_api_key.is_some() || cfg.meaning_agent_api_key.is_some() {
-        tracing::warn!(
-            "Agent API key(s) set but ADMIN_EMAIL is not — skipping agent bootstrap"
-        );
+        tracing::warn!("Agent API key(s) set but ADMIN_EMAIL is not — skipping agent bootstrap");
     }
 
     let state = AppState {
