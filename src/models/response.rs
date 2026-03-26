@@ -18,7 +18,7 @@ pub struct Response {
     pub created_at: DateTime<Utc>,
 }
 
-/// Response with vote score fields, from the `response_scores` view.
+/// Response with vote and evaluation score fields, from the `response_scores` view.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ResponseWithScores {
     pub id: Uuid,
@@ -29,8 +29,8 @@ pub struct ResponseWithScores {
     pub agent_name: String,
     pub request_prompt: String,
     pub vote_total: i64,
-    pub vote_score: Option<f64>,
-    pub composite_score: Option<f64>,
+    pub prosody_score: Option<f64>,
+    pub meaning_score: Option<f64>,
     pub comment_count: i64,
     pub user_vote: Option<i16>,
 }

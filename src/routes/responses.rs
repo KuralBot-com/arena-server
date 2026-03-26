@@ -14,20 +14,20 @@ use crate::state::AppState;
 
 use super::CacheJson;
 
-/// SQL subquery fragment that computes `composite_score` for a response.
-/// Formula: avg(evaluator scores) * 40 + vote_total.
-/// Requires `rs` to alias `response_scores`. No bound parameters needed.
-pub const COMPOSITE_SCORE_SQL: &str = "
-    (SELECT
-        CASE WHEN ev.eval_count = 0 AND (rs.upvotes - rs.downvotes) = 0 THEN NULL
-        ELSE COALESCE(ev.avg_score * 40, 0) + (rs.upvotes - rs.downvotes)
-        END
-     FROM (
-        SELECT COALESCE(AVG(e.score), 0) as avg_score,
-               COUNT(*) as eval_count
-        FROM evaluations e WHERE e.response_id = rs.id
-     ) ev
-    ) as composite_score";
+/// HN-style gravity exponent for time-decay ranking: score / (hours + 2)^GRAVITY.
+pub const HN_GRAVITY: f64 = 1.8;
+
+/// SQL lateral subquery that fetches per-criterion avg scores in a single scan.
+/// Requires `rs` to alias `response_scores`.
+const CRITERION_SCORES_SQL: &str = "
+    LEFT JOIN LATERAL (
+        SELECT
+            AVG(e.score) FILTER (WHERE c.slug = 'prosody') as prosody_score,
+            AVG(e.score) FILTER (WHERE c.slug = 'meaning') as meaning_score
+        FROM evaluations e
+        JOIN criteria c ON c.id = e.criterion_id
+        WHERE e.response_id = rs.id
+    ) cs ON true";
 
 #[derive(Serialize)]
 pub struct ResponseWithTopics {
@@ -75,7 +75,6 @@ pub struct CriterionScore {
 #[derive(Serialize)]
 pub struct ScoreDetail {
     pub response_id: Uuid,
-    pub vote_score: Option<f64>,
     pub criteria_scores: Vec<CriterionScore>,
     pub composite_score: Option<f64>,
 }
@@ -90,13 +89,13 @@ async fn fetch_response_with_topics(
             "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
                     a.name as agent_name, req.prompt as request_prompt,
                     (rs.upvotes - rs.downvotes) as vote_total,
-                    rs.vote_score,
-                    {COMPOSITE_SCORE_SQL},
+                    cs.prosody_score, cs.meaning_score,
                     (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
                     (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $1) as user_vote
              FROM response_scores rs
              JOIN agents a ON a.id = rs.agent_id
              JOIN requests req ON req.id = rs.request_id
+             {CRITERION_SCORES_SQL}
              WHERE rs.id = $2"
         ))
             .bind(user_id)
@@ -237,7 +236,7 @@ pub async fn list_responses(
     };
 
     let order_by = if sort_by_top {
-        "ORDER BY rs.vote_score DESC NULLS LAST, rs.created_at DESC"
+        &format!("ORDER BY (rs.upvotes - rs.downvotes)::float / POWER(EXTRACT(EPOCH FROM (NOW() - rs.created_at)) / 3600.0 + 2, {HN_GRAVITY}) DESC, rs.id DESC")
     } else {
         "ORDER BY rs.created_at DESC, rs.id DESC"
     };
@@ -246,13 +245,13 @@ pub async fn list_responses(
         "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
                 a.name as agent_name, req.prompt as request_prompt,
                 (rs.upvotes - rs.downvotes) as vote_total,
-                rs.vote_score,
-                {COMPOSITE_SCORE_SQL},
+                cs.prosody_score, cs.meaning_score,
                 (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
                 (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $1) as user_vote
          FROM response_scores rs
          JOIN agents a ON a.id = rs.agent_id
          JOIN requests req ON req.id = rs.request_id
+         {CRITERION_SCORES_SQL}
          {extra_joins}
          {where_clause} {order_by} LIMIT ${param_idx}"
     );
@@ -422,13 +421,13 @@ pub async fn get_scores(
     Path(response_id): Path<Uuid>,
 ) -> Result<CacheJson<ScoreDetail>, AppError> {
     // Get vote data from view
-    let vote_data: Option<(Uuid, i64, i64, Option<f64>)> =
-        sqlx::query_as("SELECT id, upvotes, downvotes, vote_score FROM response_scores WHERE id = $1")
+    let vote_data: Option<(Uuid, i64, i64)> =
+        sqlx::query_as("SELECT id, upvotes, downvotes FROM response_scores WHERE id = $1")
             .bind(response_id)
             .fetch_optional(&state.db)
             .await?;
 
-    let (_, upvotes, downvotes, vote_score) = vote_data.ok_or(AppError::NotFound)?;
+    let (_, upvotes, downvotes) = vote_data.ok_or(AppError::NotFound)?;
     let vote_total = upvotes - downvotes;
 
     // Get per-criterion averages
@@ -451,7 +450,6 @@ pub async fn get_scores(
         [(header::CACHE_CONTROL, "public, max-age=10")],
         Json(ScoreDetail {
             response_id,
-            vote_score,
             criteria_scores,
             composite_score: composite,
         }),

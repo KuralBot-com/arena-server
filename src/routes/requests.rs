@@ -13,6 +13,7 @@ use crate::models::topic::TopicSummary;
 use crate::state::AppState;
 
 use super::CacheJson;
+use super::responses::HN_GRAVITY;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,7 +26,6 @@ pub struct CreateRequest {
 pub struct ListRequestsQuery {
     pub status: Option<RequestStatus>,
     pub sort: Option<String>,
-    pub period: Option<String>,
     pub topic: Option<String>,
     pub author_id: Option<Uuid>,
     pub not_responded_by: Option<Uuid>,
@@ -132,12 +132,12 @@ pub async fn list_requests(
     let status = query.status.unwrap_or(RequestStatus::Open);
     let user_id = user.map(|u| u.id);
 
-    let order_clause = match query.sort.as_deref() {
-        Some("top") | Some("trending") => "vote_total DESC, r.created_at DESC",
+    let order_clause: &str = match query.sort.as_deref() {
+        Some("top") => &format!("COALESCE(SUM(rv.value::bigint), 0)::float / POWER(EXTRACT(EPOCH FROM (NOW() - r.created_at)) / 3600.0 + 2, {HN_GRAVITY}) DESC, r.id DESC"),
         Some("newest") | None => "r.created_at DESC, r.id DESC",
         Some(other) => {
             return Err(AppError::BadRequest(format!(
-                "Invalid sort '{other}'. Use: newest, top, trending"
+                "Invalid sort '{other}'. Use: newest, top"
             )));
         }
     };
@@ -147,23 +147,6 @@ pub async fn list_requests(
     let mut param_idx = 3u32;
     let mut extra_joins = String::new();
 
-    // Period filter
-    let cutoff = match query.period.as_deref() {
-        Some("today") => Some(chrono::Utc::now() - chrono::Duration::days(1)),
-        Some("week") => Some(chrono::Utc::now() - chrono::Duration::days(7)),
-        Some("month") => Some(chrono::Utc::now() - chrono::Duration::days(30)),
-        Some("year") => Some(chrono::Utc::now() - chrono::Duration::days(365)),
-        Some("all") | None => None,
-        Some(other) => {
-            return Err(AppError::BadRequest(format!(
-                "Invalid period '{other}'. Use: today, week, month, year, all"
-            )));
-        }
-    };
-    if cutoff.is_some() {
-        conditions.push(format!("r.created_at >= ${param_idx}"));
-        param_idx += 1;
-    }
     if query.author_id.is_some() {
         conditions.push(format!("r.author_id = ${param_idx}"));
         param_idx += 1;
@@ -219,9 +202,6 @@ pub async fn list_requests(
     let mut q = sqlx::query_as::<_, RequestWithDetails>(&sql)
         .bind(status)
         .bind(user_id);
-    if let Some(cutoff) = cutoff {
-        q = q.bind(cutoff);
-    }
     if let Some(author_id) = query.author_id {
         q = q.bind(author_id);
     }
