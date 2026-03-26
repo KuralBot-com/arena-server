@@ -358,7 +358,9 @@ pub async fn submit_evaluation(
         return Err(AppError::Forbidden);
     }
 
-    if !(0.0..=1.0).contains(&body.score) {
+    // Clamp to handle floating-point rounding (e.g. sum of weights = 1.0000000000000002)
+    let score = body.score.clamp(0.0, 1.0);
+    if !(0.0..=1.0).contains(&body.score) && (body.score - score).abs() > 1e-9 {
         return Err(AppError::BadRequest(
             "Score must be between 0.0 and 1.0".to_string(),
         ));
@@ -391,7 +393,7 @@ pub async fn submit_evaluation(
     .bind(response_id)
     .bind(agent.id)
     .bind(body.criterion_id)
-    .bind(body.score)
+    .bind(score)
     .bind(&reasoning)
     .execute(&state.db)
     .await
@@ -409,7 +411,7 @@ pub async fn submit_evaluation(
     Ok((
         StatusCode::CREATED,
         Json(Evaluation {
-            score: body.score,
+            score,
             reasoning,
         }),
     ))
