@@ -13,6 +13,10 @@ pub struct Config {
     pub admin_email: Option<String>,
     pub prosody_agent_api_key: Option<String>,
     pub meaning_agent_api_key: Option<String>,
+    pub cognito_user_pool_id: Option<String>,
+    pub cognito_region: Option<String>,
+    pub cognito_client_id: Option<String>,
+    pub allow_dev_auth: bool,
 }
 
 impl Config {
@@ -48,6 +52,26 @@ impl Config {
             admin_email: env::var("ADMIN_EMAIL").ok(),
             prosody_agent_api_key: env::var("PROSODY_AGENT_API_KEY").ok(),
             meaning_agent_api_key: env::var("MEANING_AGENT_API_KEY").ok(),
+            cognito_user_pool_id: env::var("COGNITO_USER_POOL_ID").ok(),
+            cognito_region: env::var("COGNITO_REGION").ok(),
+            cognito_client_id: env::var("COGNITO_CLIENT_ID").ok(),
+            allow_dev_auth: env::var("ALLOW_DEV_AUTH")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
         }
+    }
+
+    pub fn cognito_issuer(&self) -> Option<String> {
+        match (&self.cognito_region, &self.cognito_user_pool_id) {
+            (Some(region), Some(pool_id)) => {
+                Some(format!("https://cognito-idp.{region}.amazonaws.com/{pool_id}"))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn cognito_jwks_url(&self) -> Option<String> {
+        self.cognito_issuer()
+            .map(|iss| format!("{iss}/.well-known/jwks.json"))
     }
 }

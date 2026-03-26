@@ -10,6 +10,7 @@ pub enum AuthProvider {
     Apple,
     Microsoft,
     System,
+    Cognito,
 }
 
 impl fmt::Display for AuthProvider {
@@ -20,6 +21,7 @@ impl fmt::Display for AuthProvider {
             Self::Apple => write!(f, "apple"),
             Self::Microsoft => write!(f, "microsoft"),
             Self::System => write!(f, "system"),
+            Self::Cognito => write!(f, "cognito"),
         }
     }
 }

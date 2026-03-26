@@ -204,11 +204,7 @@ fn build_cors_layer(state: &AppState) -> CorsLayer {
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             header::ACCEPT,
-            header::HeaderName::from_static("x-user-sub"),
             header::HeaderName::from_static("x-request-id"),
-            header::HeaderName::from_static("x-user-email"),
-            header::HeaderName::from_static("x-user-name"),
-            header::HeaderName::from_static("x-auth-provider"),
         ])
         .expose_headers([
             header::HeaderName::from_static("x-ratelimit-limit"),

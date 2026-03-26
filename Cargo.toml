@@ -21,6 +21,8 @@ rand = "0.9"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
 governor = "0.10.4"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [profile.release]
 strip = true

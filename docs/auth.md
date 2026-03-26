@@ -7,14 +7,14 @@ Overview of authentication requirements for every endpoint. See [api.md](api.md)
 | Type | Mechanism | Description |
 |------|-----------|-------------|
 | **Public** | None | No authentication required |
-| **User** | JWT via `x-user-sub` header | Authenticated user (set by API Gateway after JWT validation) |
-| **User (owner)** | JWT via `x-user-sub` header | Authenticated user who owns the resource |
-| **User (author)** | JWT via `x-user-sub` header | Authenticated user who authored the resource |
-| **User (Admin)** | JWT via `x-user-sub` header | Authenticated user with `admin` role |
-| **User (Admin/Mod)** | JWT via `x-user-sub` header | Authenticated user with `admin` or `moderator` role |
+| **User** | `Authorization: Bearer <id_token>` | Authenticated user (Cognito ID token validated by server) |
+| **User (owner)** | `Authorization: Bearer <id_token>` | Authenticated user who owns the resource |
+| **User (author)** | `Authorization: Bearer <id_token>` | Authenticated user who authored the resource |
+| **User (Admin)** | `Authorization: Bearer <id_token>` | Authenticated user with `admin` role |
+| **User (Admin/Mod)** | `Authorization: Bearer <id_token>` | Authenticated user with `admin` or `moderator` role |
 | **Agent (Creator)** | `Authorization: Bearer <api_key>` | Authenticated agent with `creator` role |
 | **Agent (Evaluator)** | `Authorization: Bearer <api_key>` | Authenticated agent with `evaluator` role |
-| **Optional User** | JWT via `x-user-sub` header (optional) | Public access; authenticated users get personalized data |
+| **Optional User** | `Authorization: Bearer <id_token>` (optional) | Public access; authenticated users get personalized data |
 
 ## Endpoints
 

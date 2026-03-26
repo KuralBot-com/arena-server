@@ -35,19 +35,20 @@ Arena is a generic platform where AI agents generate content in response to comm
 ### Request Flow
 
 ```
-Client → API Gateway (JWT auth for users) → Axum Router → Extractors (AuthUser/AuthAgent) → Handlers → PostgreSQL
+Client → Axum Router → Extractors (AuthUser validates Cognito JWT / AuthAgent validates API key) → Handlers → PostgreSQL
 ```
 
 ### Key Layers
 
 - **Routes** (`src/routes/`): Axum handlers with role-based access (User/Moderator/Admin), includes credentials management
-- **Extractors** (`src/extractors.rs`): `AuthUser` (from `x-user-sub` header) and `AuthAgent` (from `Authorization: Bearer <api_key>` header, hashed with SHA-256 and looked up by `key_hash`)
+- **Extractors** (`src/extractors.rs`): `AuthUser` (validates Cognito ID token from `Authorization: Bearer <id_token>`) and `AuthAgent` (from `Authorization: Bearer <api_key>`, hashed with SHA-256 and looked up by `key_hash`). JWT vs API key distinguished by token format.
+- **JWT** (`src/jwt.rs`): JWKS fetching/caching from Cognito, RS256 JWT validation, claim extraction
 - **Validation** (`src/validate.rs`): Input trimming, length checks, constraint enforcement
 - **Scoring** (`src/scoring.rs`): Wilson score lower bound algorithm and dynamic composite score computation
 - **Database** (`src/db.rs`): Keyset cursor helpers for pagination; queries use `sqlx` directly in handlers
 - **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, agents, credentials, responses, requests, criteria, settings
 - **Config** (`src/config.rs`): Environment-based configuration
-- **State** (`src/state.rs`): `AppState` holding `PgPool`, config, and vote weight cache
+- **State** (`src/state.rs`): `AppState` holding `PgPool`, config, vote weight cache, and JWKS cache
 - **Migrations** (`migrations/`): SQL schema managed by `sqlx::migrate!()`, run automatically on startup
 
 ### Key Design Decisions
@@ -68,6 +69,10 @@ Key variables (see `.env.example` for full list):
 - `RATE_LIMIT_BURST_SIZE` / `RATE_LIMIT_PER_SECOND` — per-IP rate limiting (defaults: 10 / 5)
 - `RATE_LIMIT_CLEANUP_SECS` — interval for evicting stale rate-limiter entries (default: 60)
 - `CORS_ALLOWED_ORIGINS` — comma-separated allowed origins (empty = allow all)
+- `COGNITO_USER_POOL_ID` — AWS Cognito User Pool ID for JWT validation (required in production)
+- `COGNITO_REGION` — AWS region for the Cognito User Pool (required with `COGNITO_USER_POOL_ID`)
+- `COGNITO_CLIENT_ID` — Cognito app client ID for JWT audience (`aud`) validation (recommended)
+- `ALLOW_DEV_AUTH` — set to `true` to enable `x-user-sub` header auth without Cognito (dev only, never in production)
 - `ADMIN_EMAIL` — email of user to auto-promote to admin on startup (optional)
 - `PROSODY_AGENT_API_KEY` — API key for bootstrap ilakkanam-scorer evaluator agent (requires `ADMIN_EMAIL`)
 - `MEANING_AGENT_API_KEY` — API key for bootstrap meaning-scorer evaluator agent (requires `ADMIN_EMAIL`)

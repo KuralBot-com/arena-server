@@ -2,17 +2,52 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 
 use crate::error::AppError;
+use crate::jwt::CognitoClaims;
 use crate::models::agent::Agent;
 use crate::models::enums::AuthProvider;
 use crate::models::user::User;
 use crate::state::AppState;
 
-/// Look up an existing user or auto-provision a new one from API Gateway headers.
+fn extract_bearer_token(parts: &Parts) -> Option<&str> {
+    parts
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| !t.is_empty())
+}
+
+fn is_jwt(token: &str) -> bool {
+    token.split('.').count() == 3
+}
+
+fn cognito_provider_to_auth_provider(
+    identities: &Option<Vec<crate::jwt::CognitoIdentity>>,
+) -> AuthProvider {
+    let provider_name = identities
+        .as_ref()
+        .and_then(|ids| ids.first())
+        .and_then(|id| id.provider_name.as_deref());
+
+    match provider_name {
+        Some(name) => match name.to_lowercase().as_str() {
+            "google" => AuthProvider::Google,
+            "github" => AuthProvider::Github,
+            "signinwithapple" | "apple" => AuthProvider::Apple,
+            "microsoft" => AuthProvider::Microsoft,
+            _ => AuthProvider::Cognito,
+        },
+        None => AuthProvider::Cognito,
+    }
+}
+
+/// Look up an existing user or auto-provision a new one from validated JWT claims.
 async fn find_or_create_user(
-    parts: &Parts,
     state: &AppState,
-    user_sub: &str,
+    claims: &CognitoClaims,
 ) -> Result<User, AppError> {
+    let user_sub = &claims.sub;
+
     // Fast path: user already exists
     if let Some(user) = sqlx::query_as::<_, User>("SELECT * FROM users WHERE auth_provider_id = $1")
         .bind(user_sub)
@@ -22,31 +57,16 @@ async fn find_or_create_user(
         return Ok(user);
     }
 
-    // Slow path: auto-provision new user from API Gateway headers
-    let email = parts
-        .headers
-        .get("x-user-email")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| AppError::Unauthorized("Missing x-user-email header for new user".into()))?;
+    // Slow path: auto-provision new user from JWT claims
+    let email = claims
+        .email
+        .as_deref()
+        .ok_or_else(|| AppError::Unauthorized("ID token missing email claim".into()))?;
 
-    let name = parts
-        .headers
-        .get("x-user-name")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("New User");
-
-    let provider_str = parts
-        .headers
-        .get("x-auth-provider")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            AppError::Unauthorized("Missing x-auth-provider header for new user".into())
-        })?;
-
-    let auth_provider = parse_auth_provider(provider_str)?;
+    let name = claims.name.as_deref().unwrap_or("New User");
+    let auth_provider = cognito_provider_to_auth_provider(&claims.identities);
 
     // INSERT with ON CONFLICT to handle concurrent first-requests safely.
-    // RETURNING * does NOT return a row when DO NOTHING fires, so we fall back to SELECT.
     let result = sqlx::query_as::<_, User>(
         "INSERT INTO users (display_name, email, auth_provider, auth_provider_id)
          VALUES ($1, $2, $3, $4)
@@ -101,21 +121,12 @@ async fn find_or_create_user(
     }
 }
 
-fn parse_auth_provider(s: &str) -> Result<AuthProvider, AppError> {
-    match s.to_lowercase().as_str() {
-        "google" => Ok(AuthProvider::Google),
-        "github" => Ok(AuthProvider::Github),
-        "apple" => Ok(AuthProvider::Apple),
-        "microsoft" => Ok(AuthProvider::Microsoft),
-        _ => Err(AppError::BadRequest(format!(
-            "Unknown auth provider: '{s}'. Expected: google, github, apple, microsoft"
-        ))),
-    }
-}
-
-/// Extractor for API Gateway Cognito Authorizer-authenticated users.
-/// Reads user identity from headers set by API Gateway after JWT validation.
+/// Extractor for JWT-authenticated users.
+/// Validates the Cognito ID token from the `Authorization: Bearer <id_token>` header.
 /// Auto-provisions new users on first sign-in.
+///
+/// When Cognito is not configured (dev mode), falls back to `x-user-sub` header
+/// to look up an existing user (no auto-provisioning).
 pub struct AuthUser(pub User);
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -125,19 +136,53 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let user_sub = parts
-            .headers
-            .get("x-user-sub")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| AppError::Unauthorized("Missing x-user-sub header".to_string()))?;
+        // Dev mode fallback: requires both ALLOW_DEV_AUTH=true and no JWKS configured
+        if state.jwks.is_none() {
+            if !state.config.allow_dev_auth {
+                return Err(AppError::Unauthorized(
+                    "JWT auth not configured and dev auth is disabled. Set COGNITO_USER_POOL_ID or ALLOW_DEV_AUTH=true".into(),
+                ));
+            }
 
-        let user = find_or_create_user(parts, state, user_sub).await?;
+            let sub = parts
+                .headers
+                .get("x-user-sub")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    AppError::Unauthorized("Missing x-user-sub header".into())
+                })?;
+
+            let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE auth_provider_id = $1")
+                .bind(sub)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::Unauthorized("Dev user not found".into()))?;
+
+            return Ok(AuthUser(user));
+        }
+
+        let token = extract_bearer_token(parts)
+            .ok_or_else(|| AppError::Unauthorized("Missing Authorization header".into()))?;
+
+        if !is_jwt(token) {
+            return Err(AppError::Unauthorized(
+                "Expected JWT token for user authentication".into(),
+            ));
+        }
+
+        let jwks = state.jwks.as_ref().unwrap();
+        let claims = jwks
+            .validate_id_token_with_refresh(token)
+            .await
+            .map_err(AppError::Unauthorized)?;
+
+        let user = find_or_create_user(state, &claims).await?;
         Ok(AuthUser(user))
     }
 }
 
 /// Optional version of AuthUser — returns `None` if the header is absent.
-/// Also auto-provisions new users when the header is present.
+/// Also auto-provisions new users when a valid JWT is present.
 pub struct MaybeAuthUser(pub Option<User>);
 
 impl FromRequestParts<AppState> for MaybeAuthUser {
@@ -147,16 +192,44 @@ impl FromRequestParts<AppState> for MaybeAuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let Some(user_sub) = parts
-            .headers
-            .get("x-user-sub")
-            .and_then(|v| v.to_str().ok())
-        else {
+        // Dev mode fallback: requires both ALLOW_DEV_AUTH=true and no JWKS configured
+        if state.jwks.is_none() {
+            if !state.config.allow_dev_auth {
+                return Ok(MaybeAuthUser(None));
+            }
+
+            let Some(sub) = parts
+                .headers
+                .get("x-user-sub")
+                .and_then(|v| v.to_str().ok())
+            else {
+                return Ok(MaybeAuthUser(None));
+            };
+
+            let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE auth_provider_id = $1")
+                .bind(sub)
+                .fetch_optional(&state.db)
+                .await?;
+
+            return Ok(MaybeAuthUser(user));
+        }
+
+        let Some(token) = extract_bearer_token(parts) else {
             return Ok(MaybeAuthUser(None));
         };
 
-        let user = find_or_create_user(parts, state, user_sub).await?;
-        Ok(MaybeAuthUser(Some(user)))
+        if !is_jwt(token) {
+            return Ok(MaybeAuthUser(None));
+        }
+
+        let jwks = state.jwks.as_ref().unwrap();
+        match jwks.validate_id_token_with_refresh(token).await {
+            Ok(claims) => {
+                let user = find_or_create_user(state, &claims).await?;
+                Ok(MaybeAuthUser(Some(user)))
+            }
+            Err(_) => Ok(MaybeAuthUser(None)),
+        }
     }
 }
 
@@ -172,18 +245,13 @@ impl FromRequestParts<AppState> for AuthAgent {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
+        let api_key = extract_bearer_token(parts)
             .ok_or_else(|| AppError::Unauthorized("Missing Authorization header".to_string()))?;
 
-        let api_key = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-            AppError::Unauthorized("Authorization header must use Bearer scheme".to_string())
-        })?;
-
-        if api_key.is_empty() {
-            return Err(AppError::Unauthorized("Empty API key".to_string()));
+        if is_jwt(api_key) {
+            return Err(AppError::Unauthorized(
+                "Expected API key for agent authentication, got JWT".to_string(),
+            ));
         }
 
         let key_hash = crate::routes::credentials::hash_api_key(api_key);

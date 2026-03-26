@@ -4,6 +4,7 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 use crate::config::Config;
+use crate::jwt::JwksCache;
 use crate::models::score_weight::VoteWeight;
 
 #[derive(Clone)]
@@ -11,4 +12,5 @@ pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
     pub vote_weight: Arc<RwLock<VoteWeight>>,
+    pub jwks: Option<JwksCache>,
 }

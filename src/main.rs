@@ -12,6 +12,7 @@ mod config;
 mod db;
 mod error;
 mod extractors;
+mod jwt;
 mod models;
 mod routes;
 pub mod scoring;
@@ -181,10 +182,47 @@ async fn main() {
         tracing::warn!("Agent API key(s) set but ADMIN_EMAIL is not — skipping agent bootstrap");
     }
 
+    // Dev auth safety check
+    if cfg.allow_dev_auth {
+        tracing::warn!(
+            "ALLOW_DEV_AUTH is enabled — x-user-sub header auth is active. DO NOT use in production!"
+        );
+    }
+
+    // Production safety: Cognito requires CORS origins to be explicitly set
+    if cfg.cognito_user_pool_id.is_some()
+        && cfg.cors_allowed_origins.is_none()
+        && !cfg.allow_dev_auth
+    {
+        panic!(
+            "CORS_ALLOWED_ORIGINS must be set when Cognito auth is enabled. \
+             Set CORS_ALLOWED_ORIGINS or enable ALLOW_DEV_AUTH=true for development."
+        );
+    }
+
+    // Initialize JWKS cache for Cognito JWT validation
+    let jwks = if let Some(jwks_url) = cfg.cognito_jwks_url() {
+        let issuer = cfg.cognito_issuer().unwrap();
+        match jwt::JwksCache::new(&jwks_url, &issuer, cfg.cognito_client_id.clone()).await {
+            Ok(cache) => {
+                tracing::info!("JWKS cache initialized from {}", jwks_url);
+                Some(cache)
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize JWKS cache: {e}");
+                panic!("Cannot start without JWKS when Cognito is configured");
+            }
+        }
+    } else {
+        tracing::warn!("Cognito not configured — JWT user auth disabled");
+        None
+    };
+
     let state = AppState {
         db: pool,
         config: Arc::new(cfg),
         vote_weight: Arc::new(RwLock::new(VoteWeight::default())),
+        jwks,
     };
 
     // Load vote weight from PostgreSQL into cache
@@ -223,6 +261,24 @@ async fn main() {
             }
         }
     });
+
+    // Periodic JWKS refresh (hourly) to handle key rotation
+    if let Some(ref jwks_cache) = state.jwks {
+        let cache = jwks_cache.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                if let Err(e) = cache.refresh().await {
+                    tracing::warn!("Periodic JWKS refresh failed: {e}");
+                } else {
+                    tracing::debug!("JWKS cache refreshed");
+                }
+            }
+        });
+    }
 
     let app = routes::app(state, governor_conf);
     let listener = TcpListener::bind(&addr).await.unwrap();
