@@ -17,30 +17,23 @@ pub fn wilson_lower_bound(upvotes: i64, downvotes: i64) -> Option<f64> {
     Some(numerator / denominator)
 }
 
-/// Composite score from vote score and dynamic criteria averages.
-/// Returns a value in the 0–100 range, or None if no dimensions have data.
-pub fn composite_score(
-    vote_score: Option<f64>,
-    vote_weight: f32,
-    criterion_avgs: &[(f32, f64)], // (weight, avg_score) pairs
-) -> Option<f64> {
-    let mut total = 0.0;
-    let mut weight_sum = 0.0;
-
-    if let Some(vs) = vote_score {
-        total += vs * vote_weight as f64;
-        weight_sum += vote_weight as f64;
-    }
-    for &(w, avg) in criterion_avgs {
-        total += avg * w as f64;
-        weight_sum += w as f64;
+/// Composite score: evaluator base (0–40) + community votes.
+///
+/// Formula: `avg(criterion_scores) × 40 + vote_total`
+/// Returns None only when there are no evaluations and no votes.
+pub fn composite_score(vote_total: i64, criterion_avgs: &[f64]) -> Option<f64> {
+    if criterion_avgs.is_empty() && vote_total == 0 {
+        return None;
     }
 
-    if weight_sum == 0.0 {
-        None
+    let base = if criterion_avgs.is_empty() {
+        0.0
     } else {
-        Some((total / weight_sum) * 100.0)
-    }
+        let sum: f64 = criterion_avgs.iter().sum();
+        (sum / criterion_avgs.len() as f64) * 40.0
+    };
+
+    Some(base + vote_total as f64)
 }
 
 #[cfg(test)]
@@ -86,18 +79,33 @@ mod tests {
 
     #[test]
     fn composite_no_data_returns_none() {
-        assert_eq!(composite_score(None, 0.34, &[]), None);
+        assert_eq!(composite_score(0, &[]), None);
     }
 
     #[test]
-    fn composite_vote_only() {
-        let score = composite_score(Some(0.8), 0.34, &[]).unwrap();
-        assert!((score - 80.0).abs() < 0.01);
+    fn composite_votes_only() {
+        let score = composite_score(3, &[]).unwrap();
+        assert!((score - 3.0).abs() < 0.01);
     }
 
     #[test]
-    fn composite_all_dimensions() {
-        let score = composite_score(Some(0.8), 0.34, &[(0.33, 0.9), (0.33, 0.7)]).unwrap();
-        assert!(score > 0.0 && score <= 100.0);
+    fn composite_evaluator_only() {
+        // Single criterion score 0.9 → 0.9 * 40 = 36
+        let score = composite_score(0, &[0.9]).unwrap();
+        assert!((score - 36.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn composite_evaluator_plus_votes() {
+        // avg(0.9, 0.8) = 0.85 → 0.85 * 40 = 34, + 4 votes = 38
+        let score = composite_score(4, &[0.9, 0.8]).unwrap();
+        assert!((score - 38.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn composite_negative_votes() {
+        // 0.9 * 40 = 36, - 2 votes = 34
+        let score = composite_score(-2, &[0.9]).unwrap();
+        assert!((score - 34.0).abs() < 0.01);
     }
 }

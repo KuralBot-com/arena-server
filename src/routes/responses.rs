@@ -9,32 +9,24 @@ use crate::extractors::{AuthAgent, AuthUser, MaybeAuthUser};
 use crate::models::enums::AgentRole;
 use crate::models::pagination::PaginatedResponse;
 use crate::models::response::{Evaluation, Response, ResponseWithScores};
-use crate::models::score_weight::VoteWeight;
 use crate::models::topic::TopicSummary;
 use crate::state::AppState;
 
 use super::CacheJson;
 
 /// SQL subquery fragment that computes `composite_score` for a response.
-/// Expects `$1` to be bound to the vote weight (f32) and `rs` to alias `response_scores`.
+/// Formula: avg(evaluator scores) * 40 + vote_total.
+/// Requires `rs` to alias `response_scores`. No bound parameters needed.
 pub const COMPOSITE_SCORE_SQL: &str = "
     (SELECT
-        CASE WHEN (COALESCE($1::real, 0) + COALESCE(SUM(c.weight), 0)) = 0 THEN NULL
-        ELSE (
-            COALESCE(rs.vote_score * $1::real, 0) +
-            COALESCE(SUM(ea.avg_score * c.weight), 0)
-        ) / NULLIF(
-            CASE WHEN rs.vote_score IS NOT NULL THEN $1::real ELSE 0 END +
-            COALESCE(SUM(CASE WHEN ea.avg_score IS NOT NULL THEN c.weight ELSE 0 END), 0)
-        , 0) * 100
+        CASE WHEN ev.eval_count = 0 AND (rs.upvotes - rs.downvotes) = 0 THEN NULL
+        ELSE COALESCE(ev.avg_score * 40, 0) + (rs.upvotes - rs.downvotes)
         END
-     FROM criteria c
-     LEFT JOIN (
-        SELECT criterion_id, AVG(score) as avg_score
-        FROM evaluations WHERE response_id = rs.id
-        GROUP BY criterion_id
-     ) ea ON ea.criterion_id = c.id
-     WHERE rs.vote_score IS NOT NULL OR ea.avg_score IS NOT NULL
+     FROM (
+        SELECT COALESCE(AVG(e.score), 0) as avg_score,
+               COUNT(e.id) as eval_count
+        FROM evaluations e WHERE e.response_id = rs.id
+     ) ev
     ) as composite_score";
 
 #[derive(Serialize)]
@@ -93,22 +85,20 @@ async fn fetch_response_with_topics(
     response_id: Uuid,
     user_id: Option<Uuid>,
 ) -> Result<ResponseWithTopics, AppError> {
-    let vote_weight = VoteWeight::load(state).await?;
-
     let response: ResponseWithScores =
         sqlx::query_as(&format!(
             "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
                     a.name as agent_name, req.prompt as request_prompt,
+                    (rs.upvotes - rs.downvotes) as vote_total,
                     rs.vote_score,
                     {COMPOSITE_SCORE_SQL},
                     (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
-                    (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $2) as user_vote
+                    (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $1) as user_vote
              FROM response_scores rs
              JOIN agents a ON a.id = rs.agent_id
              JOIN requests req ON req.id = rs.request_id
-             WHERE rs.id = $3"
+             WHERE rs.id = $2"
         ))
-            .bind(vote_weight.vote)
             .bind(user_id)
             .bind(response_id)
             .fetch_optional(&state.db)
@@ -196,11 +186,10 @@ pub async fn list_responses(
             )));
         }
     };
-    let vote_weight = VoteWeight::load(&state).await?;
     let user_id = user.map(|u| u.id);
 
     let mut conditions = Vec::new();
-    let mut param_idx = 3u32; // $1 = vote_weight, $2 = user_id
+    let mut param_idx = 2u32; // $1 = user_id
     let mut extra_joins = String::new();
 
     if query.request_id.is_some() {
@@ -256,10 +245,11 @@ pub async fn list_responses(
     let sql = format!(
         "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
                 a.name as agent_name, req.prompt as request_prompt,
+                (rs.upvotes - rs.downvotes) as vote_total,
                 rs.vote_score,
                 {COMPOSITE_SCORE_SQL},
                 (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
-                (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $2) as user_vote
+                (SELECT rv.value FROM response_votes rv WHERE rv.response_id = rs.id AND rv.user_id = $1) as user_vote
          FROM response_scores rs
          JOIN agents a ON a.id = rs.agent_id
          JOIN requests req ON req.id = rs.request_id
@@ -268,7 +258,6 @@ pub async fn list_responses(
     );
 
     let mut q = sqlx::query_as::<_, ResponseWithScores>(&sql)
-        .bind(vote_weight.vote)
         .bind(user_id);
     if let Some(request_id) = query.request_id {
         q = q.bind(request_id);
@@ -430,16 +419,15 @@ pub async fn get_scores(
     State(state): State<AppState>,
     Path(response_id): Path<Uuid>,
 ) -> Result<CacheJson<ScoreDetail>, AppError> {
-    let vote_weight = VoteWeight::load(&state).await?;
-
     // Get vote data from view
-    let vote_data: Option<(Uuid, Option<f64>)> =
-        sqlx::query_as("SELECT id, vote_score FROM response_scores WHERE id = $1")
+    let vote_data: Option<(Uuid, i64, i64, Option<f64>)> =
+        sqlx::query_as("SELECT id, upvotes, downvotes, vote_score FROM response_scores WHERE id = $1")
             .bind(response_id)
             .fetch_optional(&state.db)
             .await?;
 
-    let (_, vote_score) = vote_data.ok_or(AppError::NotFound)?;
+    let (_, upvotes, downvotes, vote_score) = vote_data.ok_or(AppError::NotFound)?;
+    let vote_total = upvotes - downvotes;
 
     // Get per-criterion averages
     let criteria_scores: Vec<CriterionScore> = sqlx::query_as(
@@ -454,32 +442,8 @@ pub async fn get_scores(
     .fetch_all(&state.db)
     .await?;
 
-    // Compute composite score dynamically
-    let criterion_avgs: Vec<(f32, f64)> = {
-        // Fetch criterion weights
-        let criterion_ids: Vec<Uuid> = criteria_scores.iter().map(|cs| cs.criterion_id).collect();
-        if criterion_ids.is_empty() {
-            vec![]
-        } else {
-            let weights: Vec<(Uuid, f32)> =
-                sqlx::query_as("SELECT id, weight FROM criteria WHERE id = ANY($1)")
-                    .bind(&criterion_ids)
-                    .fetch_all(&state.db)
-                    .await?;
-
-            criteria_scores
-                .iter()
-                .filter_map(|cs| {
-                    weights
-                        .iter()
-                        .find(|(id, _)| *id == cs.criterion_id)
-                        .map(|(_, w)| (*w, cs.avg_score))
-                })
-                .collect()
-        }
-    };
-
-    let composite = crate::scoring::composite_score(vote_score, vote_weight.vote, &criterion_avgs);
+    let criterion_avgs: Vec<f64> = criteria_scores.iter().map(|cs| cs.avg_score).collect();
+    let composite = crate::scoring::composite_score(vote_total, &criterion_avgs);
 
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=10")],

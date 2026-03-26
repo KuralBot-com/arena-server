@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::MaybeAuthUser;
-use crate::models::score_weight::VoteWeight;
 use crate::state::AppState;
 
 use super::CacheJson;
@@ -46,7 +45,6 @@ pub async fn agent_leaderboard(
     Query(query): Query<AgentLeaderboardQuery>,
 ) -> Result<CacheJson<LeaderboardResponse>, AppError> {
     let limit = crate::validate::clamp_limit(query.limit);
-    let vote_weight = VoteWeight::load(&state).await?;
     let user_id = user.map(|u| u.id);
 
     let cutoff = match query.period.as_deref() {
@@ -62,11 +60,9 @@ pub async fn agent_leaderboard(
         }
     };
 
-    let composite_sql = super::responses::COMPOSITE_SCORE_SQL;
-
     // Build the period filter for responses
     let period_filter = if cutoff.is_some() {
-        "AND rs.created_at >= $2"
+        "AND rs.created_at >= $1"
     } else {
         ""
     };
@@ -77,8 +73,8 @@ pub async fn agent_leaderboard(
         .map(crate::db::decode_cursor)
         .transpose()?;
 
-    // Dynamic param indices: $1 = vote_weight, $2 = cutoff (if present)
-    let mut param_idx = if cutoff.is_some() { 3u32 } else { 2u32 };
+    // Dynamic param indices: $1 = cutoff (if present)
+    let mut param_idx = if cutoff.is_some() { 2u32 } else { 1u32 };
 
     let cursor_filter = if cursor.is_some() {
         let clause = format!(
@@ -90,30 +86,40 @@ pub async fn agent_leaderboard(
         String::new()
     };
 
+    // Agent score = avg(all evaluator scores) × 40 + sum(vote_total)
     let sql = format!(
-        "WITH agent_responses AS (
-            SELECT
-                rs.agent_id,
-                rs.id as response_id,
-                rs.vote_score,
-                {composite_sql}
+        "WITH filtered_responses AS (
+            SELECT rs.id, rs.agent_id, (rs.upvotes - rs.downvotes) as vote_total
             FROM response_scores rs
             WHERE true {period_filter}
         ),
+        agent_votes AS (
+            SELECT agent_id, COUNT(*) as response_count, SUM(vote_total) as total_votes
+            FROM filtered_responses
+            GROUP BY agent_id
+        ),
+        agent_evals AS (
+            SELECT fr.agent_id, AVG(e.score) as avg_eval_score
+            FROM filtered_responses fr
+            JOIN evaluations e ON e.response_id = fr.id
+            GROUP BY fr.agent_id
+        ),
         ranked AS (
             SELECT
-                ROW_NUMBER() OVER (ORDER BY AVG(ar.composite_score) DESC NULLS LAST, COUNT(ar.response_id) DESC) as rank,
+                ROW_NUMBER() OVER (
+                    ORDER BY (COALESCE(ae.avg_eval_score * 40, 0) + COALESCE(av.total_votes, 0)) DESC,
+                             av.response_count DESC
+                ) as rank,
                 a.id as agent_id, a.name as agent_name, a.model_name, a.model_version,
                 a.owner_id,
                 u.display_name as owner_display_name,
-                COUNT(ar.response_id) as response_count,
-                AVG(ar.composite_score) as avg_composite_score
+                av.response_count,
+                (COALESCE(ae.avg_eval_score * 40, 0) + COALESCE(av.total_votes, 0)) as avg_composite_score
             FROM agents a
             JOIN users u ON u.id = a.owner_id
-            LEFT JOIN agent_responses ar ON ar.agent_id = a.id
+            JOIN agent_votes av ON av.agent_id = a.id
+            LEFT JOIN agent_evals ae ON ae.agent_id = a.id
             WHERE a.agent_role = 'creator' AND a.is_active = true
-            GROUP BY a.id, a.name, a.model_name, a.model_version, a.owner_id, u.display_name
-            HAVING COUNT(ar.response_id) > 0
         )
         SELECT rank, agent_id, agent_name, model_name, model_version,
                owner_id, owner_display_name, response_count, avg_composite_score
@@ -123,7 +129,7 @@ pub async fn agent_leaderboard(
         LIMIT ${param_idx}"
     );
 
-    let mut q = sqlx::query_as::<_, AgentLeaderboardEntry>(&sql).bind(vote_weight.vote);
+    let mut q = sqlx::query_as::<_, AgentLeaderboardEntry>(&sql);
     if let Some(cutoff) = cutoff {
         q = q.bind(cutoff);
     }
@@ -151,39 +157,49 @@ pub async fn agent_leaderboard(
             ""
         };
 
+        let owner_param = if period_filter_user.is_empty() { 1 } else { 2 };
         let user_sql = format!(
-            "WITH agent_responses AS (
-                SELECT
-                    rs.agent_id,
-                    rs.id as response_id,
-                    rs.vote_score,
-                    {composite_sql}
+            "WITH filtered_responses AS (
+                SELECT rs.id, rs.agent_id, (rs.upvotes - rs.downvotes) as vote_total
                 FROM response_scores rs
                 WHERE true {period_filter_user}
             ),
+            agent_votes AS (
+                SELECT agent_id, COUNT(*) as response_count, SUM(vote_total) as total_votes
+                FROM filtered_responses
+                GROUP BY agent_id
+            ),
+            agent_evals AS (
+                SELECT fr.agent_id, AVG(e.score) as avg_eval_score
+                FROM filtered_responses fr
+                JOIN evaluations e ON e.response_id = fr.id
+                GROUP BY fr.agent_id
+            ),
             ranked AS (
                 SELECT
-                    ROW_NUMBER() OVER (ORDER BY AVG(ar.composite_score) DESC NULLS LAST, COUNT(ar.response_id) DESC) as rank,
+                    ROW_NUMBER() OVER (
+                        ORDER BY (COALESCE(ae.avg_eval_score * 40, 0) + COALESCE(av.total_votes, 0)) DESC,
+                                 av.response_count DESC
+                    ) as rank,
                     a.id as agent_id, a.name as agent_name, a.model_name, a.model_version,
                     a.owner_id,
                     u.display_name as owner_display_name,
-                    COUNT(ar.response_id) as response_count,
-                    AVG(ar.composite_score) as avg_composite_score
+                    av.response_count,
+                    (COALESCE(ae.avg_eval_score * 40, 0) + COALESCE(av.total_votes, 0)) as avg_composite_score
                 FROM agents a
                 JOIN users u ON u.id = a.owner_id
-                LEFT JOIN agent_responses ar ON ar.agent_id = a.id
+                JOIN agent_votes av ON av.agent_id = a.id
+                LEFT JOIN agent_evals ae ON ae.agent_id = a.id
                 WHERE a.agent_role = 'creator' AND a.is_active = true
-                GROUP BY a.id, a.name, a.model_name, a.model_version, a.owner_id, u.display_name
-                HAVING COUNT(ar.response_id) > 0
             )
             SELECT rank, agent_id, agent_name, model_name, model_version,
                    owner_id, owner_display_name, response_count, avg_composite_score
             FROM ranked
-            WHERE owner_id = $2
+            WHERE owner_id = ${owner_param}
             ORDER BY rank ASC"
         );
 
-        let mut uq = sqlx::query_as::<_, AgentLeaderboardEntry>(&user_sql).bind(vote_weight.vote);
+        let mut uq = sqlx::query_as::<_, AgentLeaderboardEntry>(&user_sql);
         if let Some(cutoff_val) = query.period.as_deref().and_then(|p| match p {
             "today" => Some(chrono::Utc::now() - chrono::Duration::days(1)),
             "week" => Some(chrono::Utc::now() - chrono::Duration::days(7)),
