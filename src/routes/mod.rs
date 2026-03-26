@@ -1,15 +1,10 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
 use axum::http::{Method, Request, header};
 use axum::routing::{get, post, put};
-use tower_governor::GovernorLayer;
-use tower_governor::governor::{GovernorConfig, GovernorConfigBuilder};
-use tower_governor::key_extractor::SmartIpKeyExtractor;
 
-pub use governor::middleware::StateInformationMiddleware;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -30,37 +25,17 @@ pub mod settings;
 pub mod topics;
 pub mod users;
 
-pub fn build_governor_config(
-    state: &AppState,
-) -> Arc<GovernorConfig<SmartIpKeyExtractor, StateInformationMiddleware>> {
-    Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(state.config.rate_limit_per_second)
-            .burst_size(state.config.rate_limit_burst_size)
-            .key_extractor(SmartIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .unwrap(),
-    )
-}
-
-pub fn app(
-    state: AppState,
-    governor_conf: Arc<GovernorConfig<SmartIpKeyExtractor, StateInformationMiddleware>>,
-) -> Router {
+pub fn app(state: AppState) -> Router {
     // CORS layer (shared by all routes)
     let cors = build_cors_layer(&state);
 
-    // Rate limiting layer (applied only to API routes)
-    let governor_layer = GovernorLayer::new(governor_conf);
-
-    // Health routes (no rate limiting)
+    // Health routes
     let health_routes = Router::new()
         .route("/health", get(health::readiness))
         .route("/health/live", get(health::liveness))
         .route("/health/ready", get(health::readiness));
 
-    // API routes (rate limited)
+    // API routes
     let api_routes = Router::new()
         .route("/stats", get(health::site_stats))
         // Users
@@ -164,10 +139,10 @@ pub fn app(
             "/settings/vote-weight",
             get(settings::get_vote_weight).put(settings::update_vote_weight),
         )
-        .layer(governor_layer);
+    ;
 
     // Merge and apply shared layers
-    // Order (outermost → innermost): TraceLayer → CorsLayer → GovernorLayer → Handler
+    // Order (outermost → innermost): TraceLayer → CorsLayer → Handler
     health_routes
         .merge(api_routes)
         .layer(cors)
@@ -205,12 +180,6 @@ fn build_cors_layer(state: &AppState) -> CorsLayer {
             header::AUTHORIZATION,
             header::ACCEPT,
             header::HeaderName::from_static("x-request-id"),
-        ])
-        .expose_headers([
-            header::HeaderName::from_static("x-ratelimit-limit"),
-            header::HeaderName::from_static("x-ratelimit-remaining"),
-            header::HeaderName::from_static("x-ratelimit-after"),
-            header::HeaderName::from_static("retry-after"),
         ])
         .max_age(Duration::from_secs(3600));
 
