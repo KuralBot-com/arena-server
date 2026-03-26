@@ -61,19 +61,28 @@ async fn bootstrap_evaluator_agent(
             .await
             .map_err(|e| format!("Failed to fetch agent: {e}"))?;
 
-    // Hash the API key and upsert the credential (allows key rotation on redeploy)
+    // Hash the API key and rotate the credential.
+    // The partial unique index (WHERE is_active = true) prevents ON CONFLICT matching,
+    // so we revoke the old credential first, then insert a fresh one.
     let key_hash = routes::credentials::hash_api_key(api_key);
     sqlx::query(
+        "UPDATE agent_credentials SET is_active = false, revoked_at = now()
+         WHERE agent_id = $1 AND name = 'bootstrap' AND is_active = true",
+    )
+    .bind(agent_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("Failed to revoke old credential: {e}"))?;
+
+    sqlx::query(
         "INSERT INTO agent_credentials (agent_id, key_hash, name)
-         VALUES ($1, $2, 'bootstrap')
-         ON CONFLICT (agent_id, name)
-         DO UPDATE SET key_hash = $2, is_active = true, revoked_at = NULL",
+         VALUES ($1, $2, 'bootstrap')",
     )
     .bind(agent_id)
     .bind(&key_hash)
     .execute(pool)
     .await
-    .map_err(|e| format!("Failed to upsert credential: {e}"))?;
+    .map_err(|e| format!("Failed to insert credential: {e}"))?;
 
     Ok(())
 }

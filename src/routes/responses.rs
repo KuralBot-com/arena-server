@@ -24,7 +24,7 @@ pub const COMPOSITE_SCORE_SQL: &str = "
         END
      FROM (
         SELECT COALESCE(AVG(e.score), 0) as avg_score,
-               COUNT(e.id) as eval_count
+               COUNT(*) as eval_count
         FROM evaluations e WHERE e.response_id = rs.id
      ) ev
     ) as composite_score";
