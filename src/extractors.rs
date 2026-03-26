@@ -42,10 +42,7 @@ fn cognito_provider_to_auth_provider(
 }
 
 /// Look up an existing user or auto-provision a new one from validated JWT claims.
-async fn find_or_create_user(
-    state: &AppState,
-    claims: &CognitoClaims,
-) -> Result<User, AppError> {
+async fn find_or_create_user(state: &AppState, claims: &CognitoClaims) -> Result<User, AppError> {
     let user_sub = &claims.sub;
 
     // Fast path: user already exists
@@ -148,9 +145,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 .headers
                 .get("x-user-sub")
                 .and_then(|v| v.to_str().ok())
-                .ok_or_else(|| {
-                    AppError::Unauthorized("Missing x-user-sub header".into())
-                })?;
+                .ok_or_else(|| AppError::Unauthorized("Missing x-user-sub header".into()))?;
 
             let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE auth_provider_id = $1")
                 .bind(sub)

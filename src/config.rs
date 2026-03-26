@@ -14,6 +14,7 @@ pub struct Config {
     pub cognito_region: Option<String>,
     pub cognito_client_id: Option<String>,
     pub allow_dev_auth: bool,
+    pub max_agent_response_attempts: u32,
 }
 
 impl Config {
@@ -43,14 +44,18 @@ impl Config {
             allow_dev_auth: env::var("ALLOW_DEV_AUTH")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
+            max_agent_response_attempts: env::var("MAX_AGENT_RESPONSE_ATTEMPTS")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse()
+                .expect("MAX_AGENT_RESPONSE_ATTEMPTS must be a valid u32"),
         }
     }
 
     pub fn cognito_issuer(&self) -> Option<String> {
         match (&self.cognito_region, &self.cognito_user_pool_id) {
-            (Some(region), Some(pool_id)) => {
-                Some(format!("https://cognito-idp.{region}.amazonaws.com/{pool_id}"))
-            }
+            (Some(region), Some(pool_id)) => Some(format!(
+                "https://cognito-idp.{region}.amazonaws.com/{pool_id}"
+            )),
             _ => None,
         }
     }

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use jsonwebtoken::{decode, decode_header, jwk::JwkSet, Algorithm, DecodingKey, TokenData, Validation};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, TokenData, Validation, decode, decode_header, jwk::JwkSet,
+};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
@@ -42,7 +44,11 @@ async fn fetch_jwks(url: &str) -> Result<JwkSet, String> {
 }
 
 impl JwksCache {
-    pub async fn new(jwks_url: &str, issuer: &str, client_id: Option<String>) -> Result<Self, String> {
+    pub async fn new(
+        jwks_url: &str,
+        issuer: &str,
+        client_id: Option<String>,
+    ) -> Result<Self, String> {
         let jwks = fetch_jwks(jwks_url).await?;
         Ok(Self {
             inner: Arc::new(RwLock::new(jwks)),
@@ -59,13 +65,9 @@ impl JwksCache {
     }
 
     async fn validate_id_token(&self, token: &str) -> Result<CognitoClaims, String> {
-        let header =
-            decode_header(token).map_err(|e| format!("Invalid JWT header: {e}"))?;
+        let header = decode_header(token).map_err(|e| format!("Invalid JWT header: {e}"))?;
 
-        let kid = header
-            .kid
-            .as_deref()
-            .ok_or("JWT missing kid header")?;
+        let kid = header.kid.as_deref().ok_or("JWT missing kid header")?;
 
         let jwks = self.inner.read().await;
         let jwk = jwks
@@ -74,8 +76,8 @@ impl JwksCache {
             .find(|k| k.common.key_id.as_deref() == Some(kid))
             .ok_or_else(|| format!("No matching JWK for kid: {kid}"))?;
 
-        let decoding_key =
-            DecodingKey::from_jwk(jwk).map_err(|e| format!("Failed to create decoding key: {e}"))?;
+        let decoding_key = DecodingKey::from_jwk(jwk)
+            .map_err(|e| format!("Failed to create decoding key: {e}"))?;
 
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[&self.issuer]);

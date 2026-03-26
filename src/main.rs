@@ -243,8 +243,7 @@ async fn main() {
     if let Some(ref jwks_cache) = state.jwks {
         let cache = jwks_cache.clone();
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(3600));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
             interval.tick().await; // skip immediate first tick
             loop {
                 interval.tick().await;

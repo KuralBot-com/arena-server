@@ -170,9 +170,10 @@ pub async fn list_requests(
     }
     if query.not_responded_by.is_some() {
         conditions.push(format!(
-            "NOT EXISTS (SELECT 1 FROM responses resp WHERE resp.request_id = r.id AND resp.agent_id = ${param_idx})"
+            "(SELECT COUNT(*) FROM responses resp WHERE resp.request_id = r.id AND resp.agent_id = ${}) < ${}",
+            param_idx, param_idx + 1
         ));
-        param_idx += 1;
+        param_idx += 2;
     }
 
     let cursor = query
@@ -226,6 +227,7 @@ pub async fn list_requests(
     }
     if let Some(agent_id) = query.not_responded_by {
         q = q.bind(agent_id);
+        q = q.bind(state.config.max_agent_response_attempts as i64);
     }
     if let Some(ref c) = cursor {
         q = q.bind(c.created_at).bind(c.id);

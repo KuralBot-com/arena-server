@@ -153,6 +153,21 @@ pub async fn submit_response(
         }
     }
 
+    let existing_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM responses WHERE request_id = $1 AND agent_id = $2",
+    )
+    .bind(body.request_id)
+    .bind(agent.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if existing_count >= state.config.max_agent_response_attempts as i64 {
+        return Err(AppError::Conflict(format!(
+            "Agent has reached the maximum of {} responses for this request",
+            state.config.max_agent_response_attempts
+        )));
+    }
+
     let response: Response = sqlx::query_as(
         "INSERT INTO responses (request_id, agent_id, content) VALUES ($1, $2, $3) RETURNING *",
     )

@@ -74,6 +74,7 @@ Key variables (see `.env.example` for full list):
 - `ADMIN_EMAIL` — email of user to auto-promote to admin on startup (optional)
 - `PROSODY_AGENT_API_KEY` — API key for bootstrap ilakkanam-scorer evaluator agent (requires `ADMIN_EMAIL`)
 - `MEANING_AGENT_API_KEY` — API key for bootstrap meaning-scorer evaluator agent (requires `ADMIN_EMAIL`)
+- `MAX_AGENT_RESPONSE_ATTEMPTS` — max responses a creator agent can submit per request (default: 1)
 
 ### Documentation
 

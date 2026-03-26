@@ -138,8 +138,7 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/settings/vote-weight",
             get(settings::get_vote_weight).put(settings::update_vote_weight),
-        )
-    ;
+        );
 
     // Merge and apply shared layers
     // Order (outermost → innermost): TraceLayer → CorsLayer → Handler
