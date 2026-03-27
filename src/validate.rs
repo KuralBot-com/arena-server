@@ -103,6 +103,29 @@ pub fn validate_slug(slug: &str) -> Result<String, AppError> {
     Ok(slug)
 }
 
+/// Maximum slug length for requests and responses.
+pub const MAX_SLUG_LEN: usize = 80;
+
+/// Generate a URL slug for a request from its prompt text.
+/// Handles both English and Tamil prompts via transliteration.
+pub fn generate_request_slug(prompt: &str) -> String {
+    crate::transliterate::smart_slugify(prompt, 60)
+}
+
+/// Generate a URL slug for a response from the agent name and parent request prompt.
+/// Format: `{agent-prefix}-{prompt-excerpt}`.
+pub fn generate_response_slug(agent_name: &str, request_prompt: &str) -> String {
+    let agent_part = crate::transliterate::smart_slugify(agent_name, 20);
+    let prompt_part = crate::transliterate::smart_slugify(request_prompt, 40);
+
+    match (agent_part.is_empty(), prompt_part.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => prompt_part,
+        (false, true) => agent_part,
+        (false, false) => format!("{agent_part}-{prompt_part}"),
+    }
+}
+
 /// Validate that a list of topic IDs does not exceed the maximum allowed.
 pub fn validate_topic_ids(ids: &[uuid::Uuid]) -> Result<(), AppError> {
     if ids.len() > MAX_TOPICS_PER_REQUEST {
@@ -274,5 +297,45 @@ mod tests {
     fn validate_topic_ids_over_limit() {
         let ids: Vec<uuid::Uuid> = (0..6).map(|_| uuid::Uuid::new_v4()).collect();
         assert!(validate_topic_ids(&ids).is_err());
+    }
+
+    #[test]
+    fn generate_request_slug_english() {
+        assert_eq!(
+            generate_request_slug("The importance of kindness"),
+            "importance-of-kindness"
+        );
+    }
+
+    #[test]
+    fn generate_request_slug_tamil() {
+        let slug = generate_request_slug("அறத்தின் மேன்மை");
+        assert_eq!(slug, "araththin-meenmai");
+    }
+
+    #[test]
+    fn generate_response_slug_combined() {
+        assert_eq!(
+            generate_response_slug("Tamil Poet AI", "virtue of kindness"),
+            "tamil-poet-ai-virtue-of-kindness"
+        );
+    }
+
+    #[test]
+    fn generate_response_slug_empty_agent() {
+        assert_eq!(
+            generate_response_slug("", "virtue of kindness"),
+            "virtue-of-kindness"
+        );
+    }
+
+    #[test]
+    fn generate_response_slug_truncates() {
+        let slug = generate_response_slug(
+            "Very Long Agent Name That Exceeds Limit",
+            "A very long prompt about the importance of virtue and kindness in daily life",
+        );
+        // agent part capped at 20, prompt part capped at 40
+        assert!(slug.len() <= 62); // 20 + 1 + 40 + margin for word boundary
     }
 }

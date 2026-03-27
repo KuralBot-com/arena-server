@@ -4,6 +4,8 @@ use axum::http::{StatusCode, header};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use sqlx::PgPool;
+
 use crate::error::AppError;
 use crate::extractors::{AuthUser, MaybeAuthUser};
 use crate::models::enums::RequestStatus;
@@ -47,6 +49,7 @@ pub struct RequestWithDetails {
     pub author_id: Uuid,
     pub author_display_name: String,
     pub prompt: String,
+    pub slug: Option<String>,
     pub status: RequestStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -54,6 +57,52 @@ pub struct RequestWithDetails {
     pub response_count: i64,
     pub comment_count: i64,
     pub user_vote: Option<i16>,
+}
+
+/// Find a unique slug by appending `-2`, `-3`, etc. if the base slug already exists.
+pub async fn ensure_unique_slug(db: &PgPool, table: &str, base: &str) -> Result<String, AppError> {
+    // Try the base slug first
+    let exists: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 FROM {table} WHERE slug = $1)"
+    ))
+    .bind(base)
+    .fetch_one(db)
+    .await?;
+
+    if !exists {
+        return Ok(base.to_string());
+    }
+
+    // Find the next available suffix
+    for suffix in 2..=100 {
+        let candidate = format!("{base}-{suffix}");
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {table} WHERE slug = $1)"
+        ))
+        .bind(&candidate)
+        .fetch_one(db)
+        .await?;
+
+        if !exists {
+            return Ok(candidate);
+        }
+    }
+
+    // Extremely unlikely: fall back to UUID suffix
+    let short_id = &Uuid::new_v4().to_string()[..8];
+    Ok(format!("{base}-{short_id}"))
+}
+
+/// Resolve a path parameter that may be a UUID or a slug to a request UUID.
+pub async fn resolve_request_id(db: &PgPool, param: &str) -> Result<Uuid, AppError> {
+    if let Ok(uuid) = Uuid::parse_str(param) {
+        return Ok(uuid);
+    }
+    sqlx::query_scalar("SELECT id FROM requests WHERE slug = $1")
+        .bind(param)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
 }
 
 #[derive(Serialize)]
@@ -70,7 +119,7 @@ async fn fetch_request_with_topics(
 ) -> Result<RequestWithTopics, AppError> {
     let request: RequestWithDetails = sqlx::query_as(
         "SELECT r.id, r.author_id, u.display_name as author_display_name,
-                r.prompt, r.status, r.created_at, r.updated_at,
+                r.prompt, r.slug, r.status, r.created_at, r.updated_at,
                 COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
                 (SELECT COUNT(*) FROM responses WHERE request_id = r.id) as response_count,
                 (SELECT COUNT(*) FROM comments WHERE request_id = r.id) as comment_count,
@@ -106,14 +155,23 @@ pub async fn create_request(
     let topic_ids = body.topic_ids.as_deref().unwrap_or(&[]);
     crate::validate::validate_topic_ids(topic_ids)?;
 
+    let slug = crate::validate::generate_request_slug(&prompt);
+    let slug = if slug.is_empty() {
+        None
+    } else {
+        Some(ensure_unique_slug(&state.db, "requests", &slug).await?)
+    };
+
     let mut tx = state.db.begin().await?;
 
-    let request: Request =
-        sqlx::query_as("INSERT INTO requests (author_id, prompt) VALUES ($1, $2) RETURNING *")
-            .bind(user.id)
-            .bind(&prompt)
-            .fetch_one(&mut *tx)
-            .await?;
+    let request: Request = sqlx::query_as(
+        "INSERT INTO requests (author_id, prompt, slug) VALUES ($1, $2, $3) RETURNING *",
+    )
+    .bind(user.id)
+    .bind(&prompt)
+    .bind(&slug)
+    .fetch_one(&mut *tx)
+    .await?;
 
     super::topics::insert_request_topics(&mut tx, request.id, topic_ids).await?;
 
@@ -133,7 +191,9 @@ pub async fn list_requests(
     let user_id = user.map(|u| u.id);
 
     let order_clause: &str = match query.sort.as_deref() {
-        Some("top") => &format!("COALESCE(SUM(rv.value::bigint), 0)::float / POWER(EXTRACT(EPOCH FROM (NOW() - r.created_at)) / 3600.0 + 2, {HN_GRAVITY}) DESC, r.id DESC"),
+        Some("top") => &format!(
+            "COALESCE(SUM(rv.value::bigint), 0)::float / POWER(EXTRACT(EPOCH FROM (NOW() - r.created_at)) / 3600.0 + 2, {HN_GRAVITY}) DESC, r.id DESC"
+        ),
         Some("newest") | None => "r.created_at DESC, r.id DESC",
         Some(other) => {
             return Err(AppError::BadRequest(format!(
@@ -184,7 +244,7 @@ pub async fn list_requests(
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
     let sql = format!(
         "SELECT r.id, r.author_id, u.display_name as author_display_name,
-                r.prompt, r.status, r.created_at, r.updated_at,
+                r.prompt, r.slug, r.status, r.created_at, r.updated_at,
                 COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
                 (SELECT COUNT(*) FROM responses WHERE request_id = r.id) as response_count,
                 (SELECT COUNT(*) FROM comments WHERE request_id = r.id) as comment_count,
@@ -252,9 +312,10 @@ pub async fn list_requests(
 pub async fn get_request(
     State(state): State<AppState>,
     MaybeAuthUser(user): MaybeAuthUser,
-    Path(request_id): Path<Uuid>,
+    Path(id_or_slug): Path<String>,
 ) -> Result<CacheJson<RequestWithTopics>, AppError> {
     let user_id = user.map(|u| u.id);
+    let request_id = resolve_request_id(&state.db, &id_or_slug).await?;
     let enriched = fetch_request_with_topics(&state, request_id, user_id).await?;
 
     Ok((

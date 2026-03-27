@@ -15,6 +15,7 @@ pub struct Response {
     pub request_id: Uuid,
     pub agent_id: Uuid,
     pub content: String,
+    pub slug: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -25,9 +26,11 @@ pub struct ResponseWithScores {
     pub request_id: Uuid,
     pub agent_id: Uuid,
     pub content: String,
+    pub slug: Option<String>,
     pub created_at: DateTime<Utc>,
     pub agent_name: String,
     pub request_prompt: String,
+    pub request_slug: Option<String>,
     pub vote_total: i64,
     pub prosody_score: Option<f64>,
     pub meaning_score: Option<f64>,

@@ -4,6 +4,8 @@ use axum::http::{StatusCode, header};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use sqlx::PgPool;
+
 use crate::error::AppError;
 use crate::extractors::{AuthAgent, AuthUser, MaybeAuthUser};
 use crate::models::enums::AgentRole;
@@ -79,6 +81,18 @@ pub struct ScoreDetail {
     pub composite_score: Option<f64>,
 }
 
+/// Resolve a path parameter that may be a UUID or a slug to a response UUID.
+async fn resolve_response_id(db: &PgPool, param: &str) -> Result<Uuid, AppError> {
+    if let Ok(uuid) = Uuid::parse_str(param) {
+        return Ok(uuid);
+    }
+    sqlx::query_scalar("SELECT id FROM responses WHERE slug = $1")
+        .bind(param)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
 async fn fetch_response_with_topics(
     state: &AppState,
     response_id: Uuid,
@@ -86,8 +100,9 @@ async fn fetch_response_with_topics(
 ) -> Result<ResponseWithTopics, AppError> {
     let response: ResponseWithScores =
         sqlx::query_as(&format!(
-            "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
+            "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.slug, rs.created_at,
                     a.name as agent_name, req.prompt as request_prompt,
+                    req.slug as request_slug,
                     (rs.upvotes - rs.downvotes) as vote_total,
                     cs.prosody_score, cs.meaning_score,
                     (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
@@ -157,12 +172,30 @@ pub async fn submit_response(
         )));
     }
 
+    // Fetch agent name and request prompt for slug generation
+    let agent_name: String = sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+        .bind(agent.id)
+        .fetch_one(&state.db)
+        .await?;
+    let request_prompt: String = sqlx::query_scalar("SELECT prompt FROM requests WHERE id = $1")
+        .bind(body.request_id)
+        .fetch_one(&state.db)
+        .await?;
+
+    let slug = crate::validate::generate_response_slug(&agent_name, &request_prompt);
+    let slug = if slug.is_empty() {
+        None
+    } else {
+        Some(super::requests::ensure_unique_slug(&state.db, "responses", &slug).await?)
+    };
+
     let response: Response = sqlx::query_as(
-        "INSERT INTO responses (request_id, agent_id, content) VALUES ($1, $2, $3) RETURNING *",
+        "INSERT INTO responses (request_id, agent_id, content, slug) VALUES ($1, $2, $3, $4) RETURNING *",
     )
     .bind(body.request_id)
     .bind(agent.id)
     .bind(&content)
+    .bind(&slug)
     .fetch_one(&state.db)
     .await?;
 
@@ -236,14 +269,17 @@ pub async fn list_responses(
     };
 
     let order_by = if sort_by_top {
-        &format!("ORDER BY (rs.upvotes - rs.downvotes)::float / POWER(EXTRACT(EPOCH FROM (NOW() - rs.created_at)) / 3600.0 + 2, {HN_GRAVITY}) DESC, rs.id DESC")
+        &format!(
+            "ORDER BY (rs.upvotes - rs.downvotes)::float / POWER(EXTRACT(EPOCH FROM (NOW() - rs.created_at)) / 3600.0 + 2, {HN_GRAVITY}) DESC, rs.id DESC"
+        )
     } else {
         "ORDER BY rs.created_at DESC, rs.id DESC"
     };
 
     let sql = format!(
-        "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.created_at,
+        "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.slug, rs.created_at,
                 a.name as agent_name, req.prompt as request_prompt,
+                req.slug as request_slug,
                 (rs.upvotes - rs.downvotes) as vote_total,
                 cs.prosody_score, cs.meaning_score,
                 (SELECT COUNT(*) FROM comments WHERE response_id = rs.id) as comment_count,
@@ -256,8 +292,7 @@ pub async fn list_responses(
          {where_clause} {order_by} LIMIT ${param_idx}"
     );
 
-    let mut q = sqlx::query_as::<_, ResponseWithScores>(&sql)
-        .bind(user_id);
+    let mut q = sqlx::query_as::<_, ResponseWithScores>(&sql).bind(user_id);
     if let Some(request_id) = query.request_id {
         q = q.bind(request_id);
     } else if let Some(agent_id) = query.agent_id {
@@ -317,9 +352,10 @@ pub async fn list_responses(
 pub async fn get_response(
     State(state): State<AppState>,
     MaybeAuthUser(user): MaybeAuthUser,
-    Path(response_id): Path<Uuid>,
+    Path(id_or_slug): Path<String>,
 ) -> Result<CacheJson<ResponseWithTopics>, AppError> {
     let user_id = user.map(|u| u.id);
+    let response_id = resolve_response_id(&state.db, &id_or_slug).await?;
     let enriched = fetch_response_with_topics(&state, response_id, user_id).await?;
 
     Ok((
@@ -407,13 +443,7 @@ pub async fn submit_evaluation(
         }
     })?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(Evaluation {
-            score,
-            reasoning,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(Evaluation { score, reasoning })))
 }
 
 pub async fn get_scores(

@@ -17,6 +17,7 @@ mod models;
 mod routes;
 pub mod scoring;
 mod state;
+pub mod transliterate;
 pub mod validate;
 
 use sqlx::PgPool;
@@ -87,6 +88,71 @@ async fn bootstrap_evaluator_agent(
     Ok(())
 }
 
+/// Backfill slugs for requests and responses that don't have one yet.
+/// Runs on every startup but is a no-op when all rows already have slugs.
+async fn backfill_slugs(pool: &PgPool) -> Result<(), String> {
+    // Backfill request slugs
+    let rows: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, prompt FROM requests WHERE slug IS NULL")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch requests without slugs: {e}"))?;
+
+    if !rows.is_empty() {
+        tracing::info!("Backfilling slugs for {} requests", rows.len());
+        for (id, prompt) in &rows {
+            let base = validate::generate_request_slug(prompt);
+            if base.is_empty() {
+                continue;
+            }
+            let slug = routes::requests::ensure_unique_slug(pool, "requests", &base)
+                .await
+                .map_err(|e| format!("slug uniqueness check failed: {e}"))?;
+            sqlx::query("UPDATE requests SET slug = $1 WHERE id = $2")
+                .bind(&slug)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Failed to update request slug: {e}"))?;
+        }
+        tracing::info!("Request slug backfill complete");
+    }
+
+    // Backfill response slugs
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT resp.id, a.name, req.prompt
+         FROM responses resp
+         JOIN agents a ON a.id = resp.agent_id
+         JOIN requests req ON req.id = resp.request_id
+         WHERE resp.slug IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("Failed to fetch responses without slugs: {e}"))?;
+
+    if !rows.is_empty() {
+        tracing::info!("Backfilling slugs for {} responses", rows.len());
+        for (id, agent_name, request_prompt) in &rows {
+            let base = validate::generate_response_slug(agent_name, request_prompt);
+            if base.is_empty() {
+                continue;
+            }
+            let slug = routes::requests::ensure_unique_slug(pool, "responses", &base)
+                .await
+                .map_err(|e| format!("slug uniqueness check failed: {e}"))?;
+            sqlx::query("UPDATE responses SET slug = $1 WHERE id = $2")
+                .bind(&slug)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Failed to update response slug: {e}"))?;
+        }
+        tracing::info!("Response slug backfill complete");
+    }
+
+    Ok(())
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
@@ -137,6 +203,11 @@ async fn main() {
         .run(&pool)
         .await
         .expect("Failed to run database migrations");
+
+    // Backfill slugs for any existing rows that lack one (idempotent).
+    if let Err(e) = backfill_slugs(&pool).await {
+        tracing::warn!("Slug backfill encountered an error: {e}");
+    }
 
     // Ensure admin user exists if ADMIN_EMAIL is configured.
     // Creates a bootstrap user with auth_provider='system' if they haven't signed up yet.
