@@ -118,12 +118,12 @@ async fn backfill_slugs(pool: &PgPool) -> Result<(), String> {
         tracing::info!("Request slug backfill complete");
     }
 
-    // Backfill response slugs
-    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT resp.id, a.name, req.prompt
+    // Backfill response slugs (agent name only).
+    // Also re-generate any old verbose slugs that included the prompt text.
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT resp.id, a.name
          FROM responses resp
          JOIN agents a ON a.id = resp.agent_id
-         JOIN requests req ON req.id = resp.request_id
          WHERE resp.slug IS NULL",
     )
     .fetch_all(pool)
@@ -132,8 +132,8 @@ async fn backfill_slugs(pool: &PgPool) -> Result<(), String> {
 
     if !rows.is_empty() {
         tracing::info!("Backfilling slugs for {} responses", rows.len());
-        for (id, agent_name, request_prompt) in &rows {
-            let base = validate::generate_response_slug(agent_name, request_prompt);
+        for (id, agent_name) in &rows {
+            let base = validate::generate_response_slug(agent_name);
             if base.is_empty() {
                 continue;
             }

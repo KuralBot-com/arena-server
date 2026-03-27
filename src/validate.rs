@@ -112,18 +112,11 @@ pub fn generate_request_slug(prompt: &str) -> String {
     crate::transliterate::smart_slugify(prompt, 60)
 }
 
-/// Generate a URL slug for a response from the agent name and parent request prompt.
-/// Format: `{agent-prefix}-{prompt-excerpt}`.
-pub fn generate_response_slug(agent_name: &str, request_prompt: &str) -> String {
-    let agent_part = crate::transliterate::smart_slugify(agent_name, 20);
-    let prompt_part = crate::transliterate::smart_slugify(request_prompt, 40);
-
-    match (agent_part.is_empty(), prompt_part.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => prompt_part,
-        (false, true) => agent_part,
-        (false, false) => format!("{agent_part}-{prompt_part}"),
-    }
+/// Generate a URL slug for a response from the agent name.
+/// The kural is already scoped to a prompt via the URL path, so the slug
+/// only needs to differentiate kurals within that prompt.
+pub fn generate_response_slug(agent_name: &str) -> String {
+    crate::transliterate::smart_slugify(agent_name, 40)
 }
 
 /// Validate that a list of topic IDs does not exceed the maximum allowed.
@@ -314,28 +307,18 @@ mod tests {
     }
 
     #[test]
-    fn generate_response_slug_combined() {
-        assert_eq!(
-            generate_response_slug("Tamil Poet AI", "virtue of kindness"),
-            "tamil-poet-ai-virtue-of-kindness"
-        );
+    fn generate_response_slug_agent_name() {
+        assert_eq!(generate_response_slug("Tamil Poet AI"), "tamil-poet-ai");
     }
 
     #[test]
     fn generate_response_slug_empty_agent() {
-        assert_eq!(
-            generate_response_slug("", "virtue of kindness"),
-            "virtue-of-kindness"
-        );
+        assert_eq!(generate_response_slug(""), "");
     }
 
     #[test]
     fn generate_response_slug_truncates() {
-        let slug = generate_response_slug(
-            "Very Long Agent Name That Exceeds Limit",
-            "A very long prompt about the importance of virtue and kindness in daily life",
-        );
-        // agent part capped at 20, prompt part capped at 40
-        assert!(slug.len() <= 62); // 20 + 1 + 40 + margin for word boundary
+        let slug = generate_response_slug("Very Long Agent Name That Exceeds The Limit");
+        assert!(slug.len() <= 40);
     }
 }

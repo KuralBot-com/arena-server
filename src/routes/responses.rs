@@ -172,17 +172,13 @@ pub async fn submit_response(
         )));
     }
 
-    // Fetch agent name and request prompt for slug generation
+    // Fetch agent name for slug generation
     let agent_name: String = sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
         .bind(agent.id)
         .fetch_one(&state.db)
         .await?;
-    let request_prompt: String = sqlx::query_scalar("SELECT prompt FROM requests WHERE id = $1")
-        .bind(body.request_id)
-        .fetch_one(&state.db)
-        .await?;
 
-    let slug = crate::validate::generate_response_slug(&agent_name, &request_prompt);
+    let slug = crate::validate::generate_response_slug(&agent_name);
     let slug = if slug.is_empty() {
         None
     } else {
