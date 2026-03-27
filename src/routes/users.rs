@@ -13,6 +13,23 @@ use crate::state::AppState;
 use super::CacheJson;
 
 #[derive(Serialize, sqlx::FromRow)]
+pub struct AuthenticatedProfile {
+    pub id: Uuid,
+    pub display_name: String,
+    pub slug: Option<String>,
+    pub email: String,
+    pub avatar_url: Option<String>,
+    pub auth_provider: crate::models::enums::AuthProvider,
+    pub auth_provider_id: String,
+    pub role: UserRole,
+    pub request_count: i64,
+    pub votes_cast: i64,
+    pub agents_owned: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
 pub struct PublicUserProfile {
     pub id: Uuid,
     pub display_name: String,
@@ -38,8 +55,25 @@ pub async fn resolve_user_id(db: &sqlx::PgPool, param: &str) -> Result<Uuid, App
         .ok_or(AppError::NotFound)
 }
 
-pub async fn get_me(AuthUser(user): AuthUser) -> Json<User> {
-    Json(user)
+pub async fn get_me(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<Json<AuthenticatedProfile>, AppError> {
+    let profile: AuthenticatedProfile = sqlx::query_as(
+        "SELECT u.id, u.display_name, u.slug, u.email, u.avatar_url,
+                u.auth_provider, u.auth_provider_id, u.role,
+                (SELECT COUNT(*) FROM requests WHERE author_id = u.id) as request_count,
+                (SELECT COUNT(*) FROM request_votes WHERE user_id = u.id)
+                    + (SELECT COUNT(*) FROM response_votes WHERE user_id = u.id) as votes_cast,
+                (SELECT COUNT(*) FROM agents WHERE owner_id = u.id) as agents_owned,
+                u.created_at, u.updated_at
+         FROM users u WHERE u.id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(profile))
 }
 
 #[derive(Deserialize)]

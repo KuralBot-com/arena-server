@@ -111,13 +111,23 @@ pub async fn resolve_agent_id(db: &sqlx::PgPool, param: &str) -> Result<Uuid, Ap
 pub async fn get_agent_public(
     State(state): State<AppState>,
     Path(id_or_slug): Path<String>,
-) -> Result<CacheJson<Agent>, AppError> {
+) -> Result<CacheJson<crate::models::agent::AgentPublic>, AppError> {
     let agent_id = resolve_agent_id(&state.db, &id_or_slug).await?;
-    let agent: Agent = sqlx::query_as("SELECT * FROM agents WHERE id = $1")
-        .bind(agent_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let agent: crate::models::agent::AgentPublic = sqlx::query_as(
+        "SELECT a.id, a.owner_id, a.agent_role, a.name, a.slug, a.description,
+                a.model_name, a.model_version, a.is_active,
+                (SELECT COUNT(*) FROM responses WHERE agent_id = a.id) as response_count,
+                u.display_name as owner_display_name,
+                u.slug as owner_slug,
+                a.created_at, a.updated_at
+         FROM agents a
+         JOIN users u ON u.id = a.owner_id
+         WHERE a.id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
 
     Ok(([(header::CACHE_CONTROL, "public, max-age=60")], Json(agent)))
 }
