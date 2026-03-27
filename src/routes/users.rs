@@ -92,7 +92,8 @@ pub async fn update_me(
         "display_name",
         &body.display_name,
         crate::validate::MAX_DISPLAY_NAME_LEN,
-    )?;
+    )?
+    .map(|n| crate::validate::strip_html_tags(&n));
     let avatar_url = crate::validate::optional_trimmed(
         "avatar_url",
         &body.avatar_url,

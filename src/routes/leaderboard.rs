@@ -72,7 +72,8 @@ const RANKED_AGENTS_CTE: &str = "
         WHERE a.agent_role = 'creator' AND a.is_active = true
     )";
 
-const RANKED_SELECT: &str = "SELECT rank, agent_id, agent_name, agent_slug, model_name, model_version,
+const RANKED_SELECT: &str =
+    "SELECT rank, agent_id, agent_name, agent_slug, model_name, model_version,
             owner_id, owner_display_name, response_count, avg_composite_score
      FROM ranked";
 

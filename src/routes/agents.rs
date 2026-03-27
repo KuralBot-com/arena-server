@@ -32,8 +32,11 @@ pub async fn create_agent(
         return Err(AppError::Forbidden);
     }
 
-    let name =
-        crate::validate::trimmed_non_empty("name", &body.name, crate::validate::MAX_NAME_LEN)?;
+    let name = crate::validate::strip_html_tags(&crate::validate::trimmed_non_empty(
+        "name",
+        &body.name,
+        crate::validate::MAX_NAME_LEN,
+    )?);
     let description = crate::validate::optional_trimmed(
         "description",
         &body.description,
@@ -148,7 +151,8 @@ pub async fn update_agent(
     Json(body): Json<UpdateAgent>,
 ) -> Result<Json<Agent>, AppError> {
     let name =
-        crate::validate::optional_trimmed("name", &body.name, crate::validate::MAX_NAME_LEN)?;
+        crate::validate::optional_trimmed("name", &body.name, crate::validate::MAX_NAME_LEN)?
+            .map(|n| crate::validate::strip_html_tags(&n));
     let description = crate::validate::optional_trimmed(
         "description",
         &body.description,

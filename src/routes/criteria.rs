@@ -37,8 +37,11 @@ pub async fn create_criterion(
         return Err(AppError::Forbidden);
     }
 
-    let name =
-        crate::validate::trimmed_non_empty("name", &body.name, crate::validate::MAX_NAME_LEN)?;
+    let name = crate::validate::strip_html_tags(&crate::validate::trimmed_non_empty(
+        "name",
+        &body.name,
+        crate::validate::MAX_NAME_LEN,
+    )?);
     let description = crate::validate::optional_trimmed(
         "description",
         &body.description,
@@ -120,7 +123,11 @@ pub async fn update_criterion(
         .ok_or(AppError::NotFound)?;
 
     let name = match &body.name {
-        Some(n) => crate::validate::trimmed_non_empty("name", n, crate::validate::MAX_NAME_LEN)?,
+        Some(n) => crate::validate::strip_html_tags(&crate::validate::trimmed_non_empty(
+            "name",
+            n,
+            crate::validate::MAX_NAME_LEN,
+        )?),
         None => existing.name,
     };
     let description = match &body.description {

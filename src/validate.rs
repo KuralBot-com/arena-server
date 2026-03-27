@@ -1,5 +1,30 @@
 use crate::error::AppError;
 
+/// Strip null bytes and Unicode control/format characters from input text.
+/// Preserves normal ASCII whitespace (space, tab, newline) for trim() to handle.
+fn sanitize_text(s: &str) -> String {
+    s.chars()
+        .filter(|c| {
+            if c.is_ascii_whitespace() {
+                return true;
+            }
+            // Remove ASCII control chars (includes null byte) and Unicode format chars
+            // (zero-width spaces, RTL/LTR overrides, joiners, BOM, etc.)
+            !c.is_control()
+                && !matches!(
+                    *c as u32,
+                    0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2069 | 0xFEFF
+                )
+        })
+        .collect()
+}
+
+/// Strip HTML angle brackets from name/identity fields.
+/// Content fields (prompts, comments) are left as-is — the frontend escapes on render.
+pub fn strip_html_tags(s: &str) -> String {
+    s.replace(['<', '>'], "")
+}
+
 // Maximum length constants for input validation.
 pub const MAX_PROMPT_LEN: usize = 2000;
 pub const MAX_CONTENT_LEN: usize = 5000;
@@ -12,9 +37,9 @@ pub const MAX_AVATAR_URL_LEN: usize = 2048;
 pub const MAX_DISPLAY_NAME_LEN: usize = 100;
 pub const MAX_TOPICS_PER_REQUEST: usize = 5;
 
-/// Trim whitespace, reject empty strings, and enforce a maximum length.
+/// Sanitize, trim whitespace, reject empty strings, and enforce a maximum length.
 pub fn trimmed_non_empty(field: &str, value: &str, max_len: usize) -> Result<String, AppError> {
-    let trimmed = value.trim().to_string();
+    let trimmed = sanitize_text(value).trim().to_string();
     if trimmed.is_empty() {
         return Err(AppError::BadRequest(format!("{field} cannot be empty")));
     }
@@ -26,7 +51,7 @@ pub fn trimmed_non_empty(field: &str, value: &str, max_len: usize) -> Result<Str
     Ok(trimmed)
 }
 
-/// For optional fields: None passes through, Some is trimmed and length-checked.
+/// For optional fields: None passes through, Some is sanitized, trimmed, and length-checked.
 pub fn optional_trimmed(
     field: &str,
     value: &Option<String>,
@@ -35,7 +60,7 @@ pub fn optional_trimmed(
     match value {
         None => Ok(None),
         Some(v) => {
-            let trimmed = v.trim().to_string();
+            let trimmed = sanitize_text(v).trim().to_string();
             if trimmed.is_empty() {
                 return Ok(None);
             }
@@ -300,6 +325,66 @@ mod tests {
     fn validate_topic_ids_over_limit() {
         let ids: Vec<uuid::Uuid> = (0..6).map(|_| uuid::Uuid::new_v4()).collect();
         assert!(validate_topic_ids(&ids).is_err());
+    }
+
+    // sanitize_text tests
+
+    #[test]
+    fn sanitize_strips_null_bytes() {
+        assert_eq!(sanitize_text("hello\0world"), "helloworld");
+    }
+
+    #[test]
+    fn sanitize_strips_zero_width_spaces() {
+        assert_eq!(sanitize_text("hello\u{200B}world"), "helloworld");
+    }
+
+    #[test]
+    fn sanitize_strips_rtl_override() {
+        assert_eq!(sanitize_text("hello\u{202E}world"), "helloworld");
+    }
+
+    #[test]
+    fn sanitize_strips_bom() {
+        assert_eq!(sanitize_text("\u{FEFF}hello"), "hello");
+    }
+
+    #[test]
+    fn sanitize_preserves_normal_text() {
+        assert_eq!(sanitize_text("  hello world  "), "  hello world  ");
+    }
+
+    #[test]
+    fn sanitize_preserves_tamil() {
+        assert_eq!(sanitize_text("அறத்தின் மேன்மை"), "அறத்தின் மேன்மை");
+    }
+
+    #[test]
+    fn trimmed_non_empty_strips_null_byte() {
+        assert_eq!(trimmed_non_empty("name", "hel\0lo", 100).unwrap(), "hello");
+    }
+
+    // strip_html_tags tests
+
+    #[test]
+    fn strip_html_removes_script_tags() {
+        assert_eq!(
+            strip_html_tags("<script>alert(1)</script>"),
+            "scriptalert(1)/script"
+        );
+    }
+
+    #[test]
+    fn strip_html_removes_img_tag() {
+        assert_eq!(
+            strip_html_tags("<img src=x onerror=alert(1)>"),
+            "img src=x onerror=alert(1)"
+        );
+    }
+
+    #[test]
+    fn strip_html_preserves_normal_text() {
+        assert_eq!(strip_html_tags("Hello World"), "Hello World");
     }
 
     #[test]

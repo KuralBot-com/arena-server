@@ -5,7 +5,9 @@ use axum::Router;
 use axum::http::{Method, Request, header};
 use axum::routing::{get, post, put};
 
+use axum::http::HeaderValue;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -145,6 +147,14 @@ pub fn app(state: AppState) -> Router {
     health_routes
         .merge(api_routes)
         .layer(cors)
+        .layer(SetResponseHeaderLayer::overriding(
+            header::HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("deny"),
+        ))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
                 let request_id = request

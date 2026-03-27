@@ -75,7 +75,8 @@ pub async fn create_credential(
         ));
     }
 
-    let name = body.name.as_deref().unwrap_or("default").trim();
+    let name = crate::validate::strip_html_tags(body.name.as_deref().unwrap_or("default").trim());
+    let name = name.as_str();
     if name.is_empty() || name.len() > 100 {
         return Err(AppError::BadRequest(
             "Credential name must be 1-100 characters".into(),
