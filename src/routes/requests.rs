@@ -130,7 +130,7 @@ async fn fetch_request_with_topics(
          JOIN users u ON u.id = r.author_id
          LEFT JOIN request_votes rv ON rv.request_id = r.id
          WHERE r.id = $1
-         GROUP BY r.id, u.display_name",
+         GROUP BY r.id, u.display_name, u.slug",
     )
     .bind(request_id)
     .bind(user_id)
@@ -257,7 +257,7 @@ pub async fn list_requests(
          LEFT JOIN request_votes rv ON rv.request_id = r.id
          {extra_joins}
          {where_clause}
-         GROUP BY r.id, u.display_name
+         GROUP BY r.id, u.display_name, u.slug
          ORDER BY {order_clause}
          LIMIT ${param_idx}"
     );
