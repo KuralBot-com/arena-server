@@ -119,6 +119,16 @@ pub fn generate_response_slug(agent_name: &str) -> String {
     crate::transliterate::smart_slugify(agent_name, 40)
 }
 
+/// Generate a URL slug for an agent from its name.
+pub fn generate_agent_slug(name: &str) -> String {
+    crate::transliterate::smart_slugify(name, 60)
+}
+
+/// Generate a URL slug for a user from their display name.
+pub fn generate_user_slug(display_name: &str) -> String {
+    crate::transliterate::smart_slugify(display_name, 60)
+}
+
 /// Validate that a list of topic IDs does not exceed the maximum allowed.
 pub fn validate_topic_ids(ids: &[uuid::Uuid]) -> Result<(), AppError> {
     if ids.len() > MAX_TOPICS_PER_REQUEST {

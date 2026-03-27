@@ -150,6 +150,60 @@ async fn backfill_slugs(pool: &PgPool) -> Result<(), String> {
         tracing::info!("Response slug backfill complete");
     }
 
+    // Backfill agent slugs
+    let rows: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, name FROM agents WHERE slug IS NULL")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch agents without slugs: {e}"))?;
+
+    if !rows.is_empty() {
+        tracing::info!("Backfilling slugs for {} agents", rows.len());
+        for (id, name) in &rows {
+            let base = validate::generate_agent_slug(name);
+            if base.is_empty() {
+                continue;
+            }
+            let slug = routes::requests::ensure_unique_slug(pool, "agents", &base)
+                .await
+                .map_err(|e| format!("slug uniqueness check failed: {e}"))?;
+            sqlx::query("UPDATE agents SET slug = $1 WHERE id = $2")
+                .bind(&slug)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Failed to update agent slug: {e}"))?;
+        }
+        tracing::info!("Agent slug backfill complete");
+    }
+
+    // Backfill user slugs
+    let rows: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, display_name FROM users WHERE slug IS NULL")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to fetch users without slugs: {e}"))?;
+
+    if !rows.is_empty() {
+        tracing::info!("Backfilling slugs for {} users", rows.len());
+        for (id, display_name) in &rows {
+            let base = validate::generate_user_slug(display_name);
+            if base.is_empty() {
+                continue;
+            }
+            let slug = routes::requests::ensure_unique_slug(pool, "users", &base)
+                .await
+                .map_err(|e| format!("slug uniqueness check failed: {e}"))?;
+            sqlx::query("UPDATE users SET slug = $1 WHERE id = $2")
+                .bind(&slug)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Failed to update user slug: {e}"))?;
+        }
+        tracing::info!("User slug backfill complete");
+    }
+
     Ok(())
 }
 

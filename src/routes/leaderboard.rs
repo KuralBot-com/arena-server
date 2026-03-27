@@ -21,6 +21,7 @@ pub struct AgentLeaderboardEntry {
     pub rank: i64,
     pub agent_id: Uuid,
     pub agent_name: String,
+    pub agent_slug: Option<String>,
     pub model_name: String,
     pub model_version: String,
     pub owner_id: Uuid,
@@ -59,7 +60,7 @@ const RANKED_AGENTS_CTE: &str = "
                 ORDER BY (COALESCE(ae.avg_eval_score * 40, 0) + COALESCE(av.total_votes, 0)) DESC,
                          av.response_count DESC
             ) as rank,
-            a.id as agent_id, a.name as agent_name, a.model_name, a.model_version,
+            a.id as agent_id, a.name as agent_name, a.slug as agent_slug, a.model_name, a.model_version,
             a.owner_id,
             u.display_name as owner_display_name,
             av.response_count,
@@ -71,7 +72,7 @@ const RANKED_AGENTS_CTE: &str = "
         WHERE a.agent_role = 'creator' AND a.is_active = true
     )";
 
-const RANKED_SELECT: &str = "SELECT rank, agent_id, agent_name, model_name, model_version,
+const RANKED_SELECT: &str = "SELECT rank, agent_id, agent_name, agent_slug, model_name, model_version,
             owner_id, owner_display_name, response_count, avg_composite_score
      FROM ranked";
 

@@ -16,6 +16,7 @@ use super::CacheJson;
 pub struct PublicUserProfile {
     pub id: Uuid,
     pub display_name: String,
+    pub slug: Option<String>,
     pub avatar_url: Option<String>,
     pub role: UserRole,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -23,6 +24,18 @@ pub struct PublicUserProfile {
     pub comment_count: i64,
     pub votes_cast: i64,
     pub agents_owned: i64,
+}
+
+/// Resolve a path parameter that may be a UUID or a slug to a user UUID.
+pub async fn resolve_user_id(db: &sqlx::PgPool, param: &str) -> Result<Uuid, AppError> {
+    if let Ok(uuid) = Uuid::parse_str(param) {
+        return Ok(uuid);
+    }
+    sqlx::query_scalar("SELECT id FROM users WHERE slug = $1")
+        .bind(param)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
 }
 
 pub async fn get_me(AuthUser(user): AuthUser) -> Json<User> {
@@ -74,10 +87,11 @@ pub async fn update_me(
 
 pub async fn get_user_profile(
     State(state): State<AppState>,
-    Path(user_id): Path<Uuid>,
+    Path(id_or_slug): Path<String>,
 ) -> Result<CacheJson<PublicUserProfile>, AppError> {
+    let user_id = resolve_user_id(&state.db, &id_or_slug).await?;
     let profile: PublicUserProfile = sqlx::query_as(
-        "SELECT u.id, u.display_name, u.avatar_url, u.role, u.created_at,
+        "SELECT u.id, u.display_name, u.slug, u.avatar_url, u.role, u.created_at,
                 (SELECT COUNT(*) FROM requests WHERE author_id = u.id) as request_count,
                 (SELECT COUNT(*) FROM comments WHERE author_id = u.id) as comment_count,
                 (SELECT COUNT(*) FROM request_votes WHERE user_id = u.id)

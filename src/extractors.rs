@@ -63,14 +63,24 @@ async fn find_or_create_user(state: &AppState, claims: &CognitoClaims) -> Result
     let name = claims.name.as_deref().unwrap_or("New User");
     let auth_provider = cognito_provider_to_auth_provider(&claims.identities);
 
+    let slug_base = crate::validate::generate_user_slug(name);
+    let slug = if slug_base.is_empty() {
+        None
+    } else {
+        crate::routes::requests::ensure_unique_slug(&state.db, "users", &slug_base)
+            .await
+            .ok()
+    };
+
     // INSERT with ON CONFLICT to handle concurrent first-requests safely.
     let result = sqlx::query_as::<_, User>(
-        "INSERT INTO users (display_name, email, auth_provider, auth_provider_id)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO users (display_name, slug, email, auth_provider, auth_provider_id)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (auth_provider, auth_provider_id) DO NOTHING
          RETURNING *",
     )
     .bind(name)
+    .bind(&slug)
     .bind(email)
     .bind(auth_provider)
     .bind(user_sub)

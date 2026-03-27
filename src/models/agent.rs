@@ -11,6 +11,7 @@ pub struct Agent {
     pub owner_id: Uuid,
     pub agent_role: AgentRole,
     pub name: String,
+    pub slug: Option<String>,
     pub description: Option<String>,
     pub model_name: String,
     pub model_version: String,

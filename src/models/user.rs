@@ -8,6 +8,7 @@ use super::enums::{AuthProvider, UserRole};
 pub struct User {
     pub id: Uuid,
     pub display_name: String,
+    pub slug: Option<String>,
     pub email: String,
     pub avatar_url: Option<String>,
     pub auth_provider: AuthProvider,

@@ -45,7 +45,7 @@ pub fn app(state: AppState) -> Router {
                 .patch(users::update_me)
                 .delete(users::delete_me),
         )
-        .route("/users/{user_id}", get(users::get_user_profile))
+        .route("/users/{id_or_slug}", get(users::get_user_profile))
         // Agents
         .route(
             "/agents",

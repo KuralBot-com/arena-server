@@ -29,6 +29,7 @@ pub struct ResponseWithScores {
     pub slug: Option<String>,
     pub created_at: DateTime<Utc>,
     pub agent_name: String,
+    pub agent_slug: Option<String>,
     pub request_prompt: String,
     pub request_slug: Option<String>,
     pub vote_total: i64,

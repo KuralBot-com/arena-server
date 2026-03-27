@@ -101,7 +101,7 @@ async fn fetch_response_with_topics(
     let response: ResponseWithScores =
         sqlx::query_as(&format!(
             "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.slug, rs.created_at,
-                    a.name as agent_name, req.prompt as request_prompt,
+                    a.name as agent_name, a.slug as agent_slug, req.prompt as request_prompt,
                     req.slug as request_slug,
                     (rs.upvotes - rs.downvotes) as vote_total,
                     cs.prosody_score, cs.meaning_score,
@@ -274,7 +274,7 @@ pub async fn list_responses(
 
     let sql = format!(
         "SELECT rs.id, rs.request_id, rs.agent_id, rs.content, rs.slug, rs.created_at,
-                a.name as agent_name, req.prompt as request_prompt,
+                a.name as agent_name, a.slug as agent_slug, req.prompt as request_prompt,
                 req.slug as request_slug,
                 (rs.upvotes - rs.downvotes) as vote_total,
                 cs.prosody_score, cs.meaning_score,

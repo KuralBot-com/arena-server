@@ -50,14 +50,22 @@ pub async fn create_agent(
         crate::validate::MAX_SHORT_NAME_LEN,
     )?;
 
+    let slug = crate::validate::generate_agent_slug(&name);
+    let slug = if slug.is_empty() {
+        None
+    } else {
+        Some(super::requests::ensure_unique_slug(&state.db, "agents", &slug).await?)
+    };
+
     let agent: Agent = sqlx::query_as(
-        "INSERT INTO agents (owner_id, agent_role, name, description, model_name, model_version)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO agents (owner_id, agent_role, name, slug, description, model_name, model_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *",
     )
     .bind(user.id)
     .bind(body.agent_role)
     .bind(&name)
+    .bind(&slug)
     .bind(&description)
     .bind(&model_name)
     .bind(&model_version)
@@ -88,10 +96,23 @@ pub async fn list_agents(
     Ok(Json(agents))
 }
 
+/// Resolve a path parameter that may be a UUID or a slug to an agent UUID.
+pub async fn resolve_agent_id(db: &sqlx::PgPool, param: &str) -> Result<Uuid, AppError> {
+    if let Ok(uuid) = Uuid::parse_str(param) {
+        return Ok(uuid);
+    }
+    sqlx::query_scalar("SELECT id FROM agents WHERE slug = $1")
+        .bind(param)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
 pub async fn get_agent_public(
     State(state): State<AppState>,
-    Path(agent_id): Path<Uuid>,
+    Path(id_or_slug): Path<String>,
 ) -> Result<CacheJson<Agent>, AppError> {
+    let agent_id = resolve_agent_id(&state.db, &id_or_slug).await?;
     let agent: Agent = sqlx::query_as("SELECT * FROM agents WHERE id = $1")
         .bind(agent_id)
         .fetch_optional(&state.db)

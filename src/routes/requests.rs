@@ -48,6 +48,7 @@ pub struct RequestWithDetails {
     pub id: Uuid,
     pub author_id: Uuid,
     pub author_display_name: String,
+    pub author_slug: Option<String>,
     pub prompt: String,
     pub slug: Option<String>,
     pub status: RequestStatus,
@@ -119,6 +120,7 @@ async fn fetch_request_with_topics(
 ) -> Result<RequestWithTopics, AppError> {
     let request: RequestWithDetails = sqlx::query_as(
         "SELECT r.id, r.author_id, u.display_name as author_display_name,
+                u.slug as author_slug,
                 r.prompt, r.slug, r.status, r.created_at, r.updated_at,
                 COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
                 (SELECT COUNT(*) FROM responses WHERE request_id = r.id) as response_count,
@@ -244,6 +246,7 @@ pub async fn list_requests(
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
     let sql = format!(
         "SELECT r.id, r.author_id, u.display_name as author_display_name,
+                u.slug as author_slug,
                 r.prompt, r.slug, r.status, r.created_at, r.updated_at,
                 COALESCE(SUM(rv.value::bigint), 0)::bigint as vote_total,
                 (SELECT COUNT(*) FROM responses WHERE request_id = r.id) as response_count,
