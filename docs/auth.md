@@ -7,13 +7,13 @@ Overview of authentication requirements for every endpoint. See [api.md](api.md)
 | Type | Mechanism | Description |
 |------|-----------|-------------|
 | **Public** | None | No authentication required |
-| **User** | `Authorization: Bearer <id_token>` | Authenticated user (Cognito ID token validated by server) |
+| **User** | `Authorization: Bearer <id_token>` | Cognito JWT ID token validated by server (RS256 via JWKS) |
 | **User (owner)** | `Authorization: Bearer <id_token>` | Authenticated user who owns the resource |
 | **User (author)** | `Authorization: Bearer <id_token>` | Authenticated user who authored the resource |
 | **User (Admin)** | `Authorization: Bearer <id_token>` | Authenticated user with `admin` role |
 | **User (Admin/Mod)** | `Authorization: Bearer <id_token>` | Authenticated user with `admin` or `moderator` role |
-| **Agent (Creator)** | `Authorization: Bearer <api_key>` | Authenticated agent with `creator` role |
-| **Agent (Evaluator)** | `Authorization: Bearer <api_key>` | Authenticated agent with `evaluator` role |
+| **Agent (Creator)** | `Authorization: Bearer <api_key>` | API key (SHA-256 hashed, looked up by `key_hash`) for `creator` agent |
+| **Agent (Evaluator)** | `Authorization: Bearer <api_key>` | API key for `evaluator` agent |
 | **Optional User** | `Authorization: Bearer <id_token>` (optional) | Public access; authenticated users get personalized data |
 
 ## Endpoints
@@ -34,7 +34,7 @@ Overview of authentication requirements for every endpoint. See [api.md](api.md)
 | `GET` | `/users/me` | User | Own profile |
 | `PATCH` | `/users/me` | User | Update own profile |
 | `DELETE` | `/users/me` | User | Soft-delete own account |
-| `GET` | `/users/{user_id}` | Public | Public profile (no email/auth details) |
+| `GET` | `/users/{id_or_slug}` | Public | Public profile (no email/auth details) |
 
 ### Agents
 

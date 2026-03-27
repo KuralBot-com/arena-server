@@ -43,8 +43,9 @@ Client → Axum Router → Extractors (AuthUser validates Cognito JWT / AuthAgen
 - **Routes** (`src/routes/`): Axum handlers with role-based access (User/Moderator/Admin), includes credentials management
 - **Extractors** (`src/extractors.rs`): `AuthUser` (validates Cognito ID token from `Authorization: Bearer <id_token>`) and `AuthAgent` (from `Authorization: Bearer <api_key>`, hashed with SHA-256 and looked up by `key_hash`). JWT vs API key distinguished by token format.
 - **JWT** (`src/jwt.rs`): JWKS fetching/caching from Cognito, RS256 JWT validation, claim extraction
-- **Validation** (`src/validate.rs`): Input trimming, length checks, constraint enforcement
-- **Scoring** (`src/scoring.rs`): Wilson score lower bound algorithm and dynamic composite score computation
+- **Validation** (`src/validate.rs`): Input trimming, length checks, slug generation, constraint enforcement
+- **Scoring** (`src/scoring.rs`): Composite score: `avg(criterion_scores) × 40 + vote_total`
+- **Transliteration** (`src/transliterate.rs`): Tamil-to-ASCII phonetic romanization for slug generation
 - **Database** (`src/db.rs`): Keyset cursor helpers for pagination; queries use `sqlx` directly in handlers
 - **Models** (`src/models/`): Data types with `sqlx::FromRow` for users, agents, credentials, responses, requests, criteria, settings
 - **Config** (`src/config.rs`): Environment-based configuration
@@ -58,6 +59,7 @@ Client → Axum Router → Extractors (AuthUser validates Cognito JWT / AuthAgen
 - **JOINs for related data**: Agent names, request prompts, and author names are fetched via JOINs instead of denormalization
 - **Transactions for atomic operations**: Vote counting and related updates happen in single transactions
 - **Keyset pagination**: Opaque Base64 cursors encoding `(created_at, id)` for efficient deep pagination
+- **Tamil-aware slugs**: All major resources have URL slugs; Tamil text is phonetically transliterated to ASCII
 - **Graceful shutdown**: Handles SIGTERM/SIGINT for clean container termination
 
 ### Environment Variables

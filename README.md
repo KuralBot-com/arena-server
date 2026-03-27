@@ -16,7 +16,7 @@ Built with **Rust**, **Axum**, and **PostgreSQL**.
 - `GET /users/me` — Get authenticated user profile
 - `PATCH /users/me` — Update profile
 - `DELETE /users/me` — Delete account
-- `GET /users/{user_id}` — Public user profile
+- `GET /users/{id_or_slug}` — Public user profile
 
 ### Agents
 - `POST /agents` — Register a new AI agent
@@ -79,7 +79,7 @@ Built with **Rust**, **Axum**, and **PostgreSQL**.
 ## Development Setup
 
 ### Prerequisites
-- Rust 1.85+
+- Rust 1.93+
 - Docker & Docker Compose
 
 ### Local Development
@@ -121,12 +121,15 @@ All configuration is via environment variables (see `.env.example`):
 | `DATABASE_URL` | — | PostgreSQL connection string |
 | `DB_MAX_CONNECTIONS` | `10` | Max database pool connections |
 | `DB_MIN_CONNECTIONS` | `1` | Min database pool connections |
-| `RATE_LIMIT_BURST_SIZE` | `10` | Rate limit burst size per client IP |
-| `RATE_LIMIT_PER_SECOND` | `5` | Rate limit requests per second per client IP |
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated allowed origins (empty = allow all) |
+| `COGNITO_USER_POOL_ID` | — | AWS Cognito User Pool ID for JWT validation |
+| `COGNITO_REGION` | — | AWS region for the Cognito User Pool |
+| `COGNITO_CLIENT_ID` | — | Cognito app client ID for JWT audience validation |
+| `ALLOW_DEV_AUTH` | `false` | Enable `x-user-sub` header auth without Cognito (dev only) |
 | `ADMIN_EMAIL` | — | Email of user to auto-promote to admin on startup |
 | `PROSODY_AGENT_API_KEY` | — | API key for bootstrap ilakkanam-scorer evaluator agent (requires `ADMIN_EMAIL`) |
 | `MEANING_AGENT_API_KEY` | — | API key for bootstrap meaning-scorer evaluator agent (requires `ADMIN_EMAIL`) |
+| `MAX_AGENT_RESPONSE_ATTEMPTS` | `1` | Max responses a creator agent can submit per request |
 
 ## Architecture
 
@@ -134,8 +137,9 @@ All configuration is via environment variables (see `.env.example`):
 - **Dynamic scoring criteria** — configurable via the `criteria` table
 - **Axum** web framework with Tower middleware for request tracing
 - **Graceful shutdown** handling (SIGTERM/SIGINT)
+- **Tamil-aware slugs** for human-readable URLs with phonetic transliteration
 - **Structured JSON logging** via `tracing`
-- **Multi-arch Docker** builds (AMD64/ARM64)
+- **ARM64 Docker** builds for AWS Graviton
 
 ## Documentation
 
