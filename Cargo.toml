@@ -1,6 +1,6 @@
 [package]
 name = "arena-server"
-version = "0.2.24"
+version = "0.2.25"
 edition = "2024"
 
 [dependencies]
@@ -13,7 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 dotenvy = "0.15"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "set-header"] }
 thiserror = "2"
 base64 = "0.22"
 rand = "0.9"
