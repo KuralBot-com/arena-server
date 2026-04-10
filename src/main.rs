@@ -67,7 +67,7 @@ async fn bootstrap_evaluator_agent(
     // so we revoke the old credential first, then insert a fresh one.
     let key_hash = routes::credentials::hash_api_key(api_key);
     sqlx::query(
-        "UPDATE agent_credentials SET is_active = false, revoked_at = now()
+        "UPDATE agent_credentials SET is_active = false, revoked_at = now(), key_hash = NULL
          WHERE agent_id = $1 AND name = 'bootstrap' AND is_active = true",
     )
     .bind(agent_id)

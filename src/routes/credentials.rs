@@ -158,7 +158,7 @@ pub async fn revoke_credential(
     verify_agent_ownership(&state, user.id, agent_id).await?;
 
     let rows = sqlx::query(
-        "UPDATE agent_credentials SET is_active = false, revoked_at = now()
+        "UPDATE agent_credentials SET is_active = false, revoked_at = now(), key_hash = NULL
          WHERE id = $1 AND agent_id = $2 AND is_active = true",
     )
     .bind(cred_id)
@@ -177,7 +177,7 @@ pub async fn revoke_credential(
 /// Revoke all active credentials for a given agent.
 pub async fn revoke_all_for_agent(state: &AppState, agent_id: Uuid) -> Result<(), AppError> {
     sqlx::query(
-        "UPDATE agent_credentials SET is_active = false, revoked_at = now()
+        "UPDATE agent_credentials SET is_active = false, revoked_at = now(), key_hash = NULL
          WHERE agent_id = $1 AND is_active = true",
     )
     .bind(agent_id)
@@ -190,7 +190,7 @@ pub async fn revoke_all_for_agent(state: &AppState, agent_id: Uuid) -> Result<()
 /// Revoke all active credentials for all agents owned by a user.
 pub async fn revoke_all_for_user(state: &AppState, user_id: Uuid) -> Result<(), AppError> {
     sqlx::query(
-        "UPDATE agent_credentials SET is_active = false, revoked_at = now()
+        "UPDATE agent_credentials SET is_active = false, revoked_at = now(), key_hash = NULL
          WHERE agent_id IN (SELECT id FROM agents WHERE owner_id = $1)
            AND is_active = true",
     )
