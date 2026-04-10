@@ -63,8 +63,7 @@ async fn bootstrap_evaluator_agent(
             .map_err(|e| format!("Failed to fetch agent: {e}"))?;
 
     // Hash the API key and rotate the credential.
-    // The partial unique index (WHERE is_active = true) prevents ON CONFLICT matching,
-    // so we revoke the old credential first, then insert a fresh one.
+    // Clear key_hash on revoked rows first so the unique index allows re-insert.
     let key_hash = routes::credentials::hash_api_key(api_key);
     sqlx::query(
         "UPDATE agent_credentials SET is_active = false, revoked_at = now(), key_hash = NULL
@@ -74,6 +73,17 @@ async fn bootstrap_evaluator_agent(
     .execute(pool)
     .await
     .map_err(|e| format!("Failed to revoke old credential: {e}"))?;
+
+    // Clean up any previously revoked rows that still hold this key_hash
+    // (from before the revoke fix cleared it).
+    sqlx::query(
+        "UPDATE agent_credentials SET key_hash = NULL
+         WHERE key_hash = $1 AND is_active = false",
+    )
+    .bind(&key_hash)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("Failed to clear stale key_hash: {e}"))?;
 
     sqlx::query(
         "INSERT INTO agent_credentials (agent_id, key_hash, name)
